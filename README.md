@@ -70,15 +70,22 @@ release build:
 
 ## 配布物
 
-この作業フォルダには GitHub 配布用 zip を生成済みです。
+この作業フォルダには GitHub 配布用 zip / pkg を生成できます。
 
 - app bundle: `.build/arm64-apple-macosx/release/SubtitleExtractorMacApp.app`
 - zip: `release/SubtitleExtractorMacApp-macOS.zip`
+- pkg: `release/SubtitleExtractorMacApp-macOS.pkg`
 
 SHA-256:
 
 ```text
 9a80c71cf40277262588cc73de7edffb3aaca0a36b913c4f1fd5eb4df0369ddd  release/SubtitleExtractorMacApp-macOS.zip
+```
+
+pkg 作成:
+
+```bash
+./package_mac_pkg.sh release 1.0.0
 ```
 
 ## ショートカット
@@ -98,5 +105,5 @@ SHA-256:
 
 ## 注意
 
-現在の zip はローカル build を ad-hoc 署名したものです。  
+現在の zip / pkg はローカル build を ad-hoc 署名したものです。  
 GitHub で一般公開して「ダウンロードしてすぐ開ける」状態にするには、最終的に Apple Developer ID 署名と notarization が必要です。
