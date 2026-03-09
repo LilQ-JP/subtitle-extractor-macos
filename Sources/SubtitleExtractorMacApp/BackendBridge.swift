@@ -103,6 +103,11 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
         return try decodeOutput(BackendRuntimeReport.self, from: output)
     }
 
+    func availableOllamaModels() throws -> BackendOllamaModelsPayload {
+        let output = try runBackend(arguments: ["models"])
+        return try decodeOutput(BackendOllamaModelsPayload.self, from: output)
+    }
+
     func extract(
         videoURL: URL,
         region: NormalizedRect?,

@@ -13,10 +13,19 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 PLIST_PATH="$CONTENTS_DIR/Info.plist"
+ICON_PATH="$SCRIPT_DIR/Assets/AppIcon.icns"
+ICON_GENERATOR="$SCRIPT_DIR/Tools/generate_app_icon.swift"
 
 if [[ ! -x "$EXECUTABLE" ]]; then
   echo "Executable not found: $EXECUTABLE" >&2
   exit 1
+fi
+
+if [[ -f "$ICON_GENERATOR" ]]; then
+  mkdir -p "$SCRIPT_DIR/Assets"
+  if [[ ! -f "$ICON_PATH" || "$ICON_GENERATOR" -nt "$ICON_PATH" ]]; then
+    swift "$ICON_GENERATOR" "$ICON_PATH"
+  fi
 fi
 
 rm -rf "$APP_DIR"
@@ -26,6 +35,10 @@ cp "$EXECUTABLE" "$MACOS_DIR/SubtitleExtractorMacApp"
 
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
   ditto --noextattr --noqtn "$RESOURCE_BUNDLE" "$RESOURCES_DIR/$(basename "$RESOURCE_BUNDLE")"
+fi
+
+if [[ -f "$ICON_PATH" ]]; then
+  cp "$ICON_PATH" "$RESOURCES_DIR/AppIcon.icns"
 fi
 
 cat > "$PLIST_PATH" <<'PLIST'
@@ -41,6 +54,8 @@ cat > "$PLIST_PATH" <<'PLIST'
   <string>com.haru.SubtitleExtractorMacApp</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon.icns</string>
   <key>CFBundleName</key>
   <string>Subtitle Extractor</string>
   <key>CFBundlePackageType</key>

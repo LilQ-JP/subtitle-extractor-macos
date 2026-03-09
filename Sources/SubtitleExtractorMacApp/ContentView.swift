@@ -75,6 +75,57 @@ private enum InspectorPanel: String, CaseIterable, Identifiable {
     }
 }
 
+private enum WorkspaceTab: String, CaseIterable, Identifiable {
+    case viewer
+    case extract
+    case style
+    case translate
+    case export
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .viewer: return "ビューア"
+        case .extract: return "抽出"
+        case .style: return "スタイル"
+        case .translate: return "翻訳"
+        case .export: return "書き出し"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .viewer: return "play.rectangle"
+        case .extract: return "text.viewfinder"
+        case .style: return "slider.horizontal.3"
+        case .translate: return "globe"
+        case .export: return "square.and.arrow.up"
+        }
+    }
+}
+
+private enum SubtitlePanelTab: String, CaseIterable, Identifiable {
+    case list
+    case editor
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .list: return "字幕一覧"
+        case .editor: return "字幕編集"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .list: return "list.bullet.rectangle"
+        case .editor: return "square.and.pencil"
+        }
+    }
+}
+
 struct ContentView: View {
     @AppStorage("SubtitleExtractorMacApp.didDismissTutorial") private var didDismissTutorial = false
     @StateObject private var viewModel = AppViewModel()
@@ -82,6 +133,8 @@ struct ContentView: View {
     @State private var subtitleSearchText = ""
     @State private var fontFavoritesOnly = false
     @State private var inspectorPanel: InspectorPanel = .setup
+    @State private var workspaceTab: WorkspaceTab = .viewer
+    @State private var subtitlePanelTab: SubtitlePanelTab = .list
     @State private var additionalSubtitleDraftTarget: AdditionalSubtitleDraftTarget?
     @State private var isShowingTutorial = false
     @State private var didCheckTutorial = false
@@ -100,18 +153,154 @@ struct ContentView: View {
 
     private var mainLayout: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
-                VSplitView {
-                    workspaceArea(for: geometry.size)
-                        .padding(.top, 16)
-                        .frame(minHeight: usesCompactWorkspace(geometry.size) ? 540 : 500)
+            workspaceTabs(for: geometry.size)
+                .padding(16)
+        }
+    }
 
-                    editorArea(for: geometry.size)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
-                        .frame(minHeight: usesStackedEditor(geometry.size) ? 280 : 240, idealHeight: 360)
+    private func workspaceTabs(for size: CGSize) -> some View {
+        TabView(selection: $workspaceTab) {
+            viewerWorkspace(for: size)
+                .tabItem { Label(WorkspaceTab.viewer.title, systemImage: WorkspaceTab.viewer.systemImage) }
+                .tag(WorkspaceTab.viewer)
+
+            extractWorkspace(for: size)
+                .tabItem { Label(WorkspaceTab.extract.title, systemImage: WorkspaceTab.extract.systemImage) }
+                .tag(WorkspaceTab.extract)
+
+            styleWorkspace(for: size)
+                .tabItem { Label(WorkspaceTab.style.title, systemImage: WorkspaceTab.style.systemImage) }
+                .tag(WorkspaceTab.style)
+
+            translationWorkspace(for: size)
+                .tabItem { Label(WorkspaceTab.translate.title, systemImage: WorkspaceTab.translate.systemImage) }
+                .tag(WorkspaceTab.translate)
+
+            exportWorkspace(for: size)
+                .tabItem { Label(WorkspaceTab.export.title, systemImage: WorkspaceTab.export.systemImage) }
+                .tag(WorkspaceTab.export)
+        }
+    }
+
+    @ViewBuilder
+    private func viewerWorkspace(for size: CGSize) -> some View {
+        VSplitView {
+            compositionCard
+                .frame(minHeight: usesCompactWorkspace(size) ? 300 : 420)
+            subtitlePanelTabs
+                .frame(minHeight: 300)
+        }
+    }
+
+    @ViewBuilder
+    private func extractWorkspace(for size: CGSize) -> some View {
+        if usesCompactWorkspace(size) {
+            VSplitView {
+                regionCard
+                    .frame(minHeight: 300)
+                ScrollView {
+                    VStack(spacing: 16) {
+                        extractionSettingsCard
+                    }
+                    .frame(maxWidth: .infinity)
                 }
+                .frame(minHeight: 220)
             }
+        } else {
+            HSplitView {
+                regionCard
+                    .frame(minWidth: 520, minHeight: 420)
+                ScrollView {
+                    VStack(spacing: 16) {
+                        extractionSettingsCard
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .frame(minWidth: 320)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func styleWorkspace(for size: CGSize) -> some View {
+        if usesCompactWorkspace(size) {
+            VSplitView {
+                compositionCard
+                    .frame(minHeight: 320)
+                ScrollView {
+                    VStack(spacing: 16) {
+                        overlayStyleCard
+                        fontSelectionCard
+                        subtitleAppearanceCard
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .frame(minHeight: 260)
+            }
+        } else {
+            HSplitView {
+                compositionCard
+                    .frame(minWidth: 640, minHeight: 420)
+                ScrollView {
+                    VStack(spacing: 16) {
+                        overlayStyleCard
+                        fontSelectionCard
+                        subtitleAppearanceCard
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .frame(minWidth: 360)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func translationWorkspace(for size: CGSize) -> some View {
+        if usesCompactWorkspace(size) {
+            VSplitView {
+                translationSettingsCard
+                    .frame(minHeight: 220)
+                subtitlePanelTabs
+                    .frame(minHeight: 320)
+            }
+        } else {
+            HSplitView {
+                translationSettingsCard
+                    .frame(minWidth: 340)
+                subtitlePanelTabs
+                    .frame(minWidth: 620)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func exportWorkspace(for size: CGSize) -> some View {
+        if usesCompactWorkspace(size) {
+            VSplitView {
+                compositionCard
+                    .frame(minHeight: 320)
+                exportSettingsCard
+                    .frame(minHeight: 220)
+            }
+        } else {
+            HSplitView {
+                compositionCard
+                    .frame(minWidth: 640, minHeight: 420)
+                exportSettingsCard
+                    .frame(minWidth: 340)
+            }
+        }
+    }
+
+    private var subtitlePanelTabs: some View {
+        TabView(selection: $subtitlePanelTab) {
+            subtitleTableCard
+                .tabItem { Label(SubtitlePanelTab.list.title, systemImage: SubtitlePanelTab.list.systemImage) }
+                .tag(SubtitlePanelTab.list)
+
+            subtitleEditorCard
+                .tabItem { Label(SubtitlePanelTab.editor.title, systemImage: SubtitlePanelTab.editor.systemImage) }
+                .tag(SubtitlePanelTab.editor)
         }
     }
 
@@ -202,6 +391,11 @@ struct ContentView: View {
                     if !hasOverlay,
                        viewModel.overlayEditMode == .videoPosition || viewModel.overlayEditMode == .videoWindow {
                         viewModel.overlayEditMode = .subtitleWindow
+                    }
+                }
+                .onChange(of: workspaceTab) { _, tab in
+                    if tab == .translate {
+                        viewModel.refreshTranslationModels()
                     }
                 }
                 .overlay {
@@ -1255,19 +1449,49 @@ struct ContentView: View {
         settingsCard(title: "翻訳設定", systemImage: "globe") {
             VStack(alignment: .leading, spacing: 12) {
                 LabeledContent("モデル") {
-                    AppKitTextField(text: $viewModel.translationModel, placeholder: "gemma3:4b")
-                        .frame(maxWidth: 240)
-                        .frame(height: 28)
-                }
-                LabeledContent("元言語") {
-                    AppKitTextField(text: $viewModel.sourceLanguage, placeholder: "ja")
-                        .frame(width: 100)
-                        .frame(height: 28)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 10) {
+                            Picker("モデル", selection: $viewModel.translationModel) {
+                                if viewModel.availableTranslationModels.isEmpty {
+                                    Text(viewModel.translationModel.isEmpty ? "モデル未検出" : viewModel.translationModel)
+                                        .tag(viewModel.translationModel)
+                                } else {
+                                    ForEach(viewModel.availableTranslationModels, id: \.self) { model in
+                                        Text(model).tag(model)
+                                    }
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(minWidth: 220, maxWidth: 320)
+
+                            Button("再読み込み", systemImage: "arrow.clockwise") {
+                                viewModel.refreshTranslationModels()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        Text(viewModel.translationRuntimeSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 LabeledContent("先言語") {
-                    AppKitTextField(text: $viewModel.targetLanguage, placeholder: "en")
-                        .frame(width: 100)
-                        .frame(height: 28)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("先言語", selection: Binding(
+                            get: { viewModel.selectedTranslationTargetLanguage },
+                            set: { viewModel.selectedTranslationTargetLanguage = $0 }
+                        )) {
+                            ForEach(TranslationTargetLanguage.allCases) { language in
+                                Text(language.displayName).tag(language)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 300)
+
+                        Text("翻訳元は日本語固定です。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {

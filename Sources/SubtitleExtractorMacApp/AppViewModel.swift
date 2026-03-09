@@ -34,6 +34,8 @@ final class AppViewModel: ObservableObject {
     @Published var translationModel = "gemma3:4b"
     @Published var sourceLanguage = "ja"
     @Published var targetLanguage = "en"
+    @Published var availableTranslationModels: [String] = []
+    @Published var translationRuntimeSummary = "Ollama モデルを確認中…"
     @Published var dictionaryEntries: [DictionaryEntry] = []
     @Published var extractionProgress: ExtractionProgress?
 
@@ -269,7 +271,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canTranslate: Bool {
-        !subtitles.isEmpty && !isBusy
+        !subtitles.isEmpty && !isBusy && !translationModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var canExport: Bool {
@@ -286,6 +288,14 @@ final class AppViewModel: ObservableObject {
 
     var additionalSubtitleFontSize: Double {
         min(max(18.0, subtitleFontSize * 0.92), 34.0)
+    }
+
+    var selectedTranslationTargetLanguage: TranslationTargetLanguage {
+        get { TranslationTargetLanguage(rawValue: targetLanguage) ?? .english }
+        set {
+            sourceLanguage = "ja"
+            targetLanguage = newValue.rawValue
+        }
     }
 
     var playbackDuration: Double {
@@ -567,12 +577,36 @@ final class AppViewModel: ObservableObject {
         let backend = backend
         Task {
             do {
-                let report = try await Task.detached(priority: .utility) {
+                async let reportTask = Task.detached(priority: .utility) {
                     try backend.checkEnvironment()
                 }.value
+                async let modelTask = Task.detached(priority: .utility) {
+                    try? backend.availableOllamaModels()
+                }.value
+
+                let report = try await reportTask
                 backendSummary = report.summary
+
+                let modelPayload = await modelTask
+                applyAvailableTranslationModels(modelPayload)
             } catch {
                 backendSummary = error.localizedDescription
+                translationRuntimeSummary = "Ollama モデルを取得できませんでした。"
+            }
+        }
+    }
+
+    func refreshTranslationModels() {
+        let backend = backend
+        translationRuntimeSummary = "Ollama モデルを更新中…"
+
+        Task {
+            let payload = await Task.detached(priority: .utility) {
+                try? backend.availableOllamaModels()
+            }.value
+
+            await MainActor.run {
+                applyAvailableTranslationModels(payload)
             }
         }
     }
@@ -1005,8 +1039,8 @@ final class AppViewModel: ObservableObject {
         TranslationPreferences(
             model: translationModel,
             customDictionary: dictionaryEntries.compactMap(\.serialized).joined(separator: "\n"),
-            sourceLanguage: sourceLanguage,
-            targetLanguage: targetLanguage
+            sourceLanguage: "ja",
+            targetLanguage: selectedTranslationTargetLanguage.rawValue
         )
     }
 
@@ -1316,8 +1350,8 @@ final class AppViewModel: ObservableObject {
         subtitleOutlineWidth = state.subtitleOutlineWidth
         exportTextMode = state.exportTextMode
         translationModel = state.translationModel
-        sourceLanguage = state.sourceLanguage
-        targetLanguage = state.targetLanguage
+        sourceLanguage = "ja"
+        targetLanguage = TranslationTargetLanguage(rawValue: state.targetLanguage)?.rawValue ?? TranslationTargetLanguage.english.rawValue
         dictionaryEntries = state.dictionaryEntries
         subtitleRegion = state.subtitleRegion.clamped()
         overlayKeyColor = state.overlayKeyColor
@@ -1351,6 +1385,31 @@ final class AppViewModel: ObservableObject {
                     announceStatus: false
                 )
             }
+        }
+    }
+
+    private func applyAvailableTranslationModels(_ payload: BackendOllamaModelsPayload?) {
+        let models = payload?.models
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending } ?? []
+
+        availableTranslationModels = models
+
+        if let payload, payload.available {
+            if models.isEmpty {
+                translationRuntimeSummary = "Ollama は起動中ですが、利用可能なモデルがありません。"
+            } else {
+                translationRuntimeSummary = "Ollama: \(models.count) モデルを検出"
+            }
+        } else {
+            translationRuntimeSummary = "Ollama が見つかりません。'ollama serve' を確認してください。"
+        }
+
+        if translationModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            translationModel = models.first ?? "gemma3:4b"
+        } else if !models.isEmpty, !models.contains(translationModel) {
+            translationModel = models.first ?? translationModel
         }
     }
 

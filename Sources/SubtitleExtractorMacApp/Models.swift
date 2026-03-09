@@ -261,6 +261,25 @@ struct DictionaryEntry: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+enum TranslationTargetLanguage: String, CaseIterable, Identifiable, Codable, Sendable {
+    case english = "en"
+    case chinese = "zh"
+    case korean = "ko"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .english:
+            return "英語"
+        case .chinese:
+            return "中国語"
+        case .korean:
+            return "韓国語"
+        }
+    }
+}
+
 struct TranslationPreferences: Codable, Hashable, Sendable {
     var model: String = "gemma3:4b"
     var customDictionary: String = ""
@@ -297,6 +316,11 @@ struct BackendRuntimeReport: Codable, Sendable {
         let joined = missingModules.joined(separator: ", ")
         return "不足モジュール: \(joined)"
     }
+}
+
+struct BackendOllamaModelsPayload: Codable, Sendable {
+    var available: Bool
+    var models: [String]
 }
 
 struct ExtractionProgress: Hashable, Sendable {

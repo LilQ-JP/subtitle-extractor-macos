@@ -129,6 +129,13 @@ def translate_command(args: argparse.Namespace):
     print(json.dumps({"subtitles": subtitles_to_json(translated_subtitles)}, ensure_ascii=False))
 
 
+def models_command(args: argparse.Namespace):
+    processor = OllamaProcessor()
+    available = processor.check_available()
+    models = processor.get_available_models() if available else []
+    print(json.dumps({"available": available, "models": models}, ensure_ascii=False))
+
+
 def export_command(args: argparse.Namespace):
     payload = read_json_stdin()
     subtitles = [subtitle_from_dict(item) for item in payload.get("subtitles", [])]
@@ -177,6 +184,9 @@ def build_parser() -> argparse.ArgumentParser:
     translate.add_argument("--source-lang", default="ja")
     translate.add_argument("--target-lang", default="en")
     translate.set_defaults(handler=translate_command)
+
+    models = subparsers.add_parser("models")
+    models.set_defaults(handler=models_command)
 
     export = subparsers.add_parser("export")
     export.add_argument("--output", required=True)
