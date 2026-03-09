@@ -1,0 +1,9 @@
+opencv-python>=4.5.0
+numpy>=1.20.0
+Pillow>=9.0.0
+easyocr>=1.6.0
+manga-ocr>=0.1.0
+requests>=2.25.0
+torch>=1.9.0
+torchvision>=0.10.0
+transformers>=4.20.0
