@@ -13,11 +13,11 @@ PKG_PATH="$OUTPUT_DIR/SubtitleExtractorMacApp-macOS.pkg"
 IDENTIFIER="com.haru.SubtitleExtractorMacApp.pkg"
 PAYLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/subtitleextractor-pkg.XXXXXX")"
 STAGED_APP_DIR="$PAYLOAD_DIR"
-COMPONENT_PLIST="$PAYLOAD_DIR/components.plist"
+COMPONENT_PLIST="$(mktemp "${TMPDIR:-/tmp}/subtitleextractor-components.XXXXXX.plist")"
 
 mkdir -p "$OUTPUT_DIR"
 mkdir -p "$STAGED_APP_DIR"
-trap 'rm -rf "$PAYLOAD_DIR"' EXIT
+trap 'rm -rf "$PAYLOAD_DIR"; rm -f "$COMPONENT_PLIST"' EXIT
 
 ditto --noextattr --noqtn "$APP_PATH" "$STAGED_APP_DIR/$(basename "$APP_PATH")"
 xattr -cr "$STAGED_APP_DIR/$(basename "$APP_PATH")" 2>/dev/null || true
