@@ -11,16 +11,29 @@ OUTPUT_DIR="${3:-$SCRIPT_DIR/release}"
 APP_PATH="$("$SCRIPT_DIR/package_mac_app.sh" "$CONFIG")"
 PKG_PATH="$OUTPUT_DIR/SubtitleExtractorMacApp-macOS.pkg"
 IDENTIFIER="com.haru.SubtitleExtractorMacApp.pkg"
+PAYLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/subtitleextractor-pkg.XXXXXX")"
+STAGED_APP_DIR="$PAYLOAD_DIR"
+COMPONENT_PLIST="$PAYLOAD_DIR/components.plist"
 
 mkdir -p "$OUTPUT_DIR"
+mkdir -p "$STAGED_APP_DIR"
+trap 'rm -rf "$PAYLOAD_DIR"' EXIT
 
-# Ad-hoc sign so the component package contains a coherent bundle signature.
-codesign --force --deep --sign - "$APP_PATH" >/dev/null 2>&1 || true
+ditto --noextattr --noqtn "$APP_PATH" "$STAGED_APP_DIR/$(basename "$APP_PATH")"
+xattr -cr "$STAGED_APP_DIR/$(basename "$APP_PATH")" 2>/dev/null || true
+find "$STAGED_APP_DIR/$(basename "$APP_PATH")" -name '._*' -delete
+codesign --force --deep --sign - "$STAGED_APP_DIR/$(basename "$APP_PATH")" >/dev/null 2>&1 || true
+
+pkgbuild --analyze --root "$PAYLOAD_DIR" "$COMPONENT_PLIST" >/dev/null
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleHasStrictIdentifier true" "$COMPONENT_PLIST"
+/usr/libexec/PlistBuddy -c "Set :0:BundleOverwriteAction upgrade" "$COMPONENT_PLIST"
 
 rm -f "$PKG_PATH"
 pkgbuild \
-  --component "$APP_PATH" \
-  --install-location /Applications \
+  --root "$PAYLOAD_DIR" \
+  --component-plist "$COMPONENT_PLIST" \
+  --install-location Applications \
   --identifier "$IDENTIFIER" \
   --version "$VERSION" \
   "$PKG_PATH"

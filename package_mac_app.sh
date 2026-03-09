@@ -25,7 +25,7 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$EXECUTABLE" "$MACOS_DIR/SubtitleExtractorMacApp"
 
 if [[ -d "$RESOURCE_BUNDLE" ]]; then
-  cp -R "$RESOURCE_BUNDLE" "$RESOURCES_DIR/"
+  ditto --noextattr --noqtn "$RESOURCE_BUNDLE" "$RESOURCES_DIR/$(basename "$RESOURCE_BUNDLE")"
 fi
 
 cat > "$PLIST_PATH" <<'PLIST'
@@ -56,5 +56,12 @@ cat > "$PLIST_PATH" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+xattr -cr "$APP_DIR" 2>/dev/null || true
+find "$APP_DIR" -depth -name '__pycache__' -type d -exec rm -rf {} \;
+find "$APP_DIR" -name '*.pyc' -delete
+find "$APP_DIR" -name '._*' -delete
+
+codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || true
 
 echo "$APP_DIR"

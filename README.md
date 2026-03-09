@@ -76,6 +76,8 @@ release build:
 - zip: `release/SubtitleExtractorMacApp-macOS.zip`
 - pkg: `release/SubtitleExtractorMacApp-macOS.pkg`
 
+`.pkg` は Installer から入れられます。通常は `/Applications`、ユーザー install では `~/Applications` に配置されます。
+
 SHA-256:
 
 ```text
