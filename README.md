@@ -1,7 +1,15 @@
 # Caption Studio for macOS
 
+[日本語](README.md) | [English](README_EN.md)
+
 SwiftUI ベースの macOS 字幕抽出・翻訳・焼き込みツールです。  
 ゲーム動画や配信アーカイブから字幕を抽出し、翻訳、オーバーレイ合成、`SRT` / `FCPXML` / `MP4` / `MOV` 書き出しまでを 1 本で扱えます。
+
+## こんな人向け
+
+- ゲーム配信や VTuber 切り抜きに多言語字幕を付けたい人
+- Final Cut Pro に OCR で拾った字幕を持っていきたい人
+- クラウドに動画を上げず、Mac 上だけで字幕処理を完結したい人
 
 ## 現在のアプリ構成
 
@@ -135,6 +143,8 @@ xcrun notarytool store-credentials "SubtitleExtractorNotary" \
 
 一般公開までの順番は [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) にまとめています。
 
+GitHub Release や Product Hunt 用の紹介文、スクリーンショット準備メモは [LAUNCH_KIT.md](LAUNCH_KIT.md) にまとめています。
+
 ## アイコン差し替え
 
 自分で作ったアイコンを入れる場合は次のどちらかです。
@@ -156,6 +166,12 @@ xcrun notarytool store-credentials "SubtitleExtractorNotary" \
 - 設定画面では、アプリ言語、ワークスペースレイアウト、Ollama の状態確認、更新確認をまとめて扱えます。
 - アップデート設定の `プレリリース版も候補に含める` をオンにすると、GitHub Releases の beta / rc 版も更新候補として確認できます。
 
+## サポート
+
+開発継続を応援してもらえる場合は GitHub Sponsors から支援できます。  
+GitHub 上でスポンサー導線を表示する設定は [.github/FUNDING.yml](.github/FUNDING.yml) に入っています。
+まだ `LilQ-JP` 側で GitHub Sponsors を有効化していない場合は、GitHub 上の公開ボタンは表示されません。
+
 ## ショートカット
 
 - `⌘O`: 動画を開く
@@ -170,5 +186,5 @@ xcrun notarytool store-credentials "SubtitleExtractorNotary" \
 - `⌘⇧4`: MP4 書き出し
 - `⌘⇧5`: MOV 書き出し
 - `⌘/`: チュートリアル表示
-
-
+一般公開用の配布物を作るときは、Apple Developer ID 署名と notarization を通した `zip / pkg` を使ってください。  
+このリポジトリの現在の公開手順は `RELEASE_CHECKLIST.md` と `notarize_release.sh` に揃えています。
