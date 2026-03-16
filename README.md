@@ -171,7 +171,4 @@ xcrun notarytool store-credentials "SubtitleExtractorNotary" \
 - `⌘⇧5`: MOV 書き出し
 - `⌘/`: チュートリアル表示
 
-## 注意
 
-現在の zip / pkg はローカル build を ad-hoc 署名したものです。  
-GitHub で一般公開して「ダウンロードしてすぐ開ける」状態にするには、最終的に Apple Developer ID 署名と notarization が必要です。
