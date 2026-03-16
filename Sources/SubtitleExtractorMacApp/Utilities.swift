@@ -1,9 +1,16 @@
 import AppKit
 import AVFoundation
+import CoreImage
 import CoreText
 import Foundation
 
 enum SubtitleUtilities {
+    enum VideoAspectProfile {
+        case landscape
+        case square
+        case portrait
+    }
+
     static func availableFontNames() -> [String] {
         var fontNames = Set(NSFontManager.shared.availableFonts)
         let collection = CTFontCollectionCreateFromAvailableFonts(nil)
@@ -31,6 +38,71 @@ enum SubtitleUtilities {
                 return leftScore > rightScore
             }
             return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+    }
+
+    static func videoAspectProfile(for size: CGSize) -> VideoAspectProfile {
+        guard size.width > 0, size.height > 0 else {
+            return .landscape
+        }
+
+        let ratio = size.width / size.height
+        if ratio < 0.9 {
+            return .portrait
+        }
+        if ratio <= 1.2 {
+            return .square
+        }
+        return .landscape
+    }
+
+    static func defaultSubtitleRegion(for size: CGSize) -> NormalizedRect {
+        switch videoAspectProfile(for: size) {
+        case .landscape:
+            return .defaultSubtitleArea
+        case .square:
+            return NormalizedRect(x: 0.06, y: 0.72, width: 0.88, height: 0.20)
+        case .portrait:
+            return NormalizedRect(x: 0.05, y: 0.70, width: 0.90, height: 0.22)
+        }
+    }
+
+    static func defaultOverlayVideoRect(for size: CGSize) -> NormalizedRect {
+        switch videoAspectProfile(for: size) {
+        case .landscape:
+            return NormalizedRect(x: 0.08, y: 0.08, width: 0.84, height: 0.72)
+        case .square:
+            return NormalizedRect(x: 0.06, y: 0.06, width: 0.88, height: 0.76)
+        case .portrait:
+            return NormalizedRect(x: 0.05, y: 0.05, width: 0.90, height: 0.78)
+        }
+    }
+
+    static func defaultSubtitleLayoutRect(for size: CGSize, wrapWidthRatio: Double) -> NormalizedRect {
+        switch videoAspectProfile(for: size) {
+        case .landscape:
+            return NormalizedRect(
+                x: max(0.025, (1.0 - wrapWidthRatio) / 2.0),
+                y: 0.74,
+                width: min(max(wrapWidthRatio, 0.35), 0.95),
+                height: 0.18
+            ).clamped()
+        case .square:
+            let width = min(max(wrapWidthRatio, 0.72), 0.94)
+            return NormalizedRect(
+                x: max(0.03, (1.0 - width) / 2.0),
+                y: 0.76,
+                width: width,
+                height: 0.16
+            ).clamped()
+        case .portrait:
+            let width = min(max(wrapWidthRatio, 0.82), 0.94)
+            return NormalizedRect(
+                x: max(0.03, (1.0 - width) / 2.0),
+                y: 0.76,
+                width: width,
+                height: 0.17
+            ).clamped()
         }
     }
 
@@ -80,6 +152,25 @@ enum SubtitleUtilities {
         return normalizedSearchToken(text).contains(normalizedQuery)
     }
 
+    static func executablePath(named command: String) -> String? {
+        let fileManager = FileManager.default
+        let environmentPaths = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        let commonPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+
+        let candidates = Array(Set(environmentPaths + commonPaths)).map {
+            URL(fileURLWithPath: $0).appendingPathComponent(command).path
+        }
+
+        return candidates.first { fileManager.isExecutableFile(atPath: $0) }
+    }
+
     static func srtTimestamp(_ seconds: Double) -> String {
         let safe = max(0.0, seconds)
         let hours = Int(safe / 3600.0)
@@ -112,6 +203,19 @@ enum SubtitleUtilities {
         let minutes = Int((safe.truncatingRemainder(dividingBy: 3600.0)) / 60.0)
         let secs = safe.truncatingRemainder(dividingBy: 60.0)
         return String(format: "%02d:%02d:%05.2f", hours, minutes, secs)
+    }
+
+    static func compactDuration(_ seconds: Double) -> String {
+        let safe = max(0.0, seconds)
+        let totalSeconds = Int(safe.rounded())
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let remainingSeconds = totalSeconds % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainingSeconds)
+        }
+        return String(format: "%d:%02d", minutes, remainingSeconds)
     }
 
     static func parseTimecode(_ rawValue: String) -> Double? {
@@ -308,7 +412,13 @@ enum SubtitleUtilities {
         return (text as NSString).size(withAttributes: [.font: font]).width
     }
 
-    static func wrapText(_ text: String, maxWidth: CGFloat, font: NSFont) -> String {
+    static func wrapText(
+        _ text: String,
+        maxWidth: CGFloat,
+        font: NSFont,
+        timingMode: WrapTimingMode = .balanced,
+        preferredLineCount: Int = 0
+    ) -> String {
         let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -317,6 +427,14 @@ enum SubtitleUtilities {
         guard !normalized.isEmpty, maxWidth > 0 else {
             return normalized
         }
+
+        let softWidth = preferredWrapWidth(
+            for: normalized,
+            hardWidth: maxWidth,
+            font: font,
+            timingMode: timingMode,
+            preferredLineCount: preferredLineCount
+        )
 
         func splitLongToken(_ token: String) -> [String] {
             var parts: [String] = []
@@ -352,7 +470,7 @@ enum SubtitleUtilities {
                 continue
             }
 
-            if measureTextWidth(line, font: font) <= maxWidth {
+            if measureTextWidth(line, font: font) <= softWidth {
                 wrappedLines.append(line)
                 continue
             }
@@ -372,7 +490,7 @@ enum SubtitleUtilities {
                     }
 
                     let candidate = current.isEmpty ? word : "\(current) \(word)"
-                    if !current.isEmpty && measureTextWidth(candidate, font: font) > maxWidth {
+                    if !current.isEmpty && measureTextWidth(candidate, font: font) > softWidth {
                         wrappedLines.append(current)
                         current = word
                     } else {
@@ -389,7 +507,7 @@ enum SubtitleUtilities {
             var current = ""
             for character in line {
                 let candidate = current + String(character)
-                if !current.isEmpty && measureTextWidth(candidate, font: font) > maxWidth {
+                if !current.isEmpty && measureTextWidth(candidate, font: font) > softWidth {
                     wrappedLines.append(current)
                     current = String(character)
                 } else {
@@ -410,7 +528,9 @@ enum SubtitleUtilities {
         videoWidth: Int?,
         wrapWidthRatio: Double,
         fontSize: CGFloat,
-        fontName: String = "Hiragino Sans"
+        fontName: String = "Hiragino Sans",
+        timingMode: WrapTimingMode = .balanced,
+        preferredLineCount: Int = 0
     ) -> String {
         guard let subtitle else {
             return ""
@@ -424,7 +544,13 @@ enum SubtitleUtilities {
 
         let font = subtitleFont(named: fontName, size: fontSize)
         let width = max(120.0, CGFloat(videoWidth ?? 1920) * CGFloat(min(max(wrapWidthRatio, 0.3), 0.95)))
-        return wrapText(source, maxWidth: width, font: font)
+        return wrapText(
+            source,
+            maxWidth: width,
+            font: font,
+            timingMode: timingMode,
+            preferredLineCount: preferredLineCount
+        )
     }
 
     static func fitSubtitleLayout(
@@ -432,7 +558,9 @@ enum SubtitleUtilities {
         regionSize: CGSize,
         fontName: String,
         preferredFontSize: CGFloat,
-        outlineWidth: CGFloat
+        outlineWidth: CGFloat,
+        timingMode: WrapTimingMode = .balanced,
+        preferredLineCount: Int = 0
     ) -> FittedSubtitleLayout {
         let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
@@ -467,7 +595,13 @@ enum SubtitleUtilities {
                 height: max(8.0, safeRegion.height - verticalInset * 2.0)
             )
 
-            let wrappedText = wrapText(normalized, maxWidth: availableSize.width, font: font)
+            let wrappedText = wrapText(
+                normalized,
+                maxWidth: availableSize.width,
+                font: font,
+                timingMode: timingMode,
+                preferredLineCount: preferredLineCount
+            )
             let measuredSize = measureSubtitleText(
                 wrappedText,
                 fontName: fontName,
@@ -475,6 +609,7 @@ enum SubtitleUtilities {
                 outlineWidth: effectiveOutline,
                 maxSize: availableSize
             )
+            let lineCount = lineCount(of: wrappedText)
 
             bestLayout = FittedSubtitleLayout(
                 text: wrappedText,
@@ -483,7 +618,8 @@ enum SubtitleUtilities {
             )
 
             if measuredSize.width <= availableSize.width + 0.5,
-               measuredSize.height <= availableSize.height + 0.5 {
+               measuredSize.height <= availableSize.height + 0.5,
+               (preferredLineCount <= 1 || lineCount <= preferredLineCount) {
                 return bestLayout
             }
 
@@ -491,6 +627,38 @@ enum SubtitleUtilities {
         }
 
         return bestLayout
+    }
+
+    static func lineCount(of text: String) -> Int {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return 0
+        }
+        return normalized.components(separatedBy: "\n").count
+    }
+
+    private static func preferredWrapWidth(
+        for normalizedText: String,
+        hardWidth: CGFloat,
+        font: NSFont,
+        timingMode: WrapTimingMode,
+        preferredLineCount: Int
+    ) -> CGFloat {
+        var targetWidth = hardWidth * CGFloat(timingMode.fillRatio)
+        if preferredLineCount > 1 {
+            let flattened = normalizedText
+                .components(separatedBy: .newlines)
+                .joined(separator: " ")
+                .replacingOccurrences(of: "  ", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let totalWidth = measureTextWidth(flattened, font: font)
+            if totalWidth > 0 {
+                let approximateLineWidth = (totalWidth / CGFloat(preferredLineCount)) * 1.08
+                targetWidth = min(targetWidth, approximateLineWidth)
+            }
+        }
+        let minimumWidth = min(hardWidth, max(48.0, hardWidth * 0.45))
+        return min(hardWidth, max(minimumWidth, targetWidth))
     }
 
     static func aspectFitRect(contentSize: CGSize, in bounds: CGRect) -> CGRect {
@@ -519,7 +687,8 @@ enum SubtitleUtilities {
         size: CGSize,
         fontName: String,
         fontSize: CGFloat,
-        outlineWidth: CGFloat
+        outlineWidth: CGFloat,
+        style: CaptionVisualStyle = .classic
     ) -> CGImage? {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty, size.width > 4, size.height > 4 else {
@@ -542,7 +711,7 @@ enum SubtitleUtilities {
             string: normalized,
             attributes: [
                 .font: font,
-                .foregroundColor: NSColor.white,
+                .foregroundColor: style.textColor.nsColor,
                 .paragraphStyle: paragraphStyle,
             ]
         )
@@ -551,9 +720,9 @@ enum SubtitleUtilities {
             string: normalized,
             attributes: [
                 .font: font,
-                .strokeColor: NSColor.black.withAlphaComponent(0.96),
-                .foregroundColor: NSColor.black.withAlphaComponent(0.96),
-                .strokeWidth: max(0.0, outlineWidth * 2.0),
+                .strokeColor: style.outlineColor.nsColor,
+                .foregroundColor: style.outlineColor.nsColor,
+                .strokeWidth: max(0.0, style.usesOutline ? outlineWidth * 2.0 : 0.0),
                 .paragraphStyle: paragraphStyle,
             ]
         )
@@ -577,14 +746,50 @@ enum SubtitleUtilities {
             height: min(availableRect.height, ceil(textBounds.height) + insetY)
         )
 
-        strokeAttributed.draw(
-            with: drawRect,
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
-        fillAttributed.draw(
-            with: drawRect,
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        )
+        let backgroundPaddingX = max(14.0, font.pointSize * 0.36)
+        let backgroundPaddingY = max(6.0, font.pointSize * 0.20)
+        let backgroundRect = CGRect(
+            x: max(availableRect.minX, drawRect.midX - min(drawRect.width, textBounds.width + backgroundPaddingX * 2.0) / 2.0),
+            y: max(availableRect.minY, drawRect.minY - backgroundPaddingY * 0.5),
+            width: min(drawRect.width, max(textBounds.width + backgroundPaddingX * 2.0, font.pointSize * 3.2)),
+            height: min(availableRect.height, textBounds.height + backgroundPaddingY * 2.0)
+        ).integral
+
+        if style.usesBackground {
+            let backgroundPath = NSBezierPath(
+                roundedRect: backgroundRect,
+                xRadius: max(6.0, style.backgroundCornerRadius),
+                yRadius: max(6.0, style.backgroundCornerRadius)
+            )
+            style.backgroundColor.nsColor.setFill()
+            backgroundPath.fill()
+        }
+
+        if style.usesOutline, outlineWidth > 0 {
+            strokeAttributed.draw(
+                with: drawRect,
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            )
+        }
+
+        if style.usesShadow {
+            NSGraphicsContext.current?.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = style.shadowColor.nsColor
+            shadow.shadowBlurRadius = max(1.0, font.pointSize * 0.12)
+            shadow.shadowOffset = CGSize(width: 0, height: -1)
+            shadow.set()
+            fillAttributed.draw(
+                with: drawRect,
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            )
+            NSGraphicsContext.current?.restoreGraphicsState()
+        } else {
+            fillAttributed.draw(
+                with: drawRect,
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            )
+        }
 
         return NSGraphicsContext.current?.cgContext.makeImage()
     }
@@ -960,12 +1165,14 @@ enum SubtitleUtilities {
 }
 
 enum VideoLoader {
+    private static let subtitleCIContext = CIContext(options: nil)
+
     static func load(url: URL) async throws -> LoadedVideoAsset {
         let asset = AVURLAsset(url: url)
         let tracks = try await asset.loadTracks(withMediaType: .video)
         guard let track = tracks.first else {
             throw NSError(
-                domain: "SubtitleExtractorMacApp",
+                domain: "CaptionStudio",
                 code: 1001,
                 userInfo: [NSLocalizedDescriptionKey: "動画トラックを取得できませんでした。"]
             )
@@ -989,20 +1196,197 @@ enum VideoLoader {
             duration: duration
         )
 
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 1400, height: 900)
-        let sampleTime = CMTime(
-            seconds: min(max(duration * 0.1, 0.0), max(duration, 0.5)),
-            preferredTimescale: 600
-        )
-
-        let imageRef = try generator.copyCGImage(at: sampleTime, actualTime: nil)
-        let image = NSImage(cgImage: imageRef, size: NSSize(width: imageRef.width, height: imageRef.height))
+        let previewTIFFData = previewImageData(for: asset, duration: duration)
 
         return LoadedVideoAsset(
             metadata: metadata,
-            previewTIFFData: image.tiffRepresentation
+            previewTIFFData: previewTIFFData
         )
+    }
+
+    static func framePreviewImage(url: URL, at time: Double) async -> NSImage? {
+        let asset = AVURLAsset(url: url)
+        let durationValue = try? await asset.load(.duration)
+        let duration = durationValue?.seconds.isFinite == true ? max(0.0, durationValue?.seconds ?? 0.0) : 0.0
+        guard let imageRef = frameImage(
+            for: asset,
+            seconds: min(max(time, 0.0), max(duration - 0.05, 0.0)),
+            duration: duration
+        ) else {
+            return nil
+        }
+        return NSImage(cgImage: imageRef, size: NSSize(width: imageRef.width, height: imageRef.height))
+    }
+
+    static func subtitleCropImageBase64Samples(
+        url: URL,
+        range: ClosedRange<Double>,
+        region: NormalizedRect,
+        language: TranslationLanguage,
+        maxFrames: Int = 4,
+        progressHandler: ExtractionProgressHandlerBox? = nil
+    ) async throws -> [String] {
+        let asset = AVURLAsset(url: url)
+        let durationValue = try? await asset.load(.duration)
+        let duration = durationValue?.seconds.isFinite == true ? max(0.0, durationValue?.seconds ?? 0.0) : 0.0
+
+        return try await Task.detached(priority: .userInitiated) {
+            let clampedRegion = region.clamped()
+            let total = max(1, maxFrames)
+            let lowerBound = min(max(range.lowerBound, 0.0), duration)
+            let upperBound = min(max(range.upperBound, lowerBound), duration)
+            let effectiveUpperBound = max(lowerBound, upperBound - 0.05)
+            var results: [String] = []
+
+            for index in 0 ..< total {
+                try Task.checkCancellation()
+
+                let progress = total == 1 ? 0.5 : Double(index) / Double(total - 1)
+                let seconds = lowerBound + (effectiveUpperBound - lowerBound) * progress
+                let clampedSeconds = min(max(seconds, lowerBound), effectiveUpperBound)
+                if let image = frameImage(for: asset, seconds: clampedSeconds, duration: duration),
+                   let cropped = crop(image: image, region: clampedRegion) {
+                    if let encoded = pngBase64(from: cropped) {
+                        results.append(encoded)
+                    }
+                    if let enhanced = enhancedSubtitleImage(from: cropped, language: language),
+                       let encodedEnhanced = pngBase64(from: enhanced) {
+                        results.append(encodedEnhanced)
+                    }
+                }
+                progressHandler?.report(
+                    ExtractionProgress(
+                        processed: index + 1,
+                        total: total,
+                        timestamp: clampedSeconds
+                    )
+                )
+            }
+
+            return Array(results.prefix(total))
+        }.value
+    }
+
+    private static func previewImageData(for asset: AVURLAsset, duration: Double) -> Data? {
+        let candidateSeconds = Array(
+            Set([
+                min(max(duration * 0.10, 0.0), max(duration - 0.05, 0.0)),
+                0.0,
+                min(0.5, max(duration - 0.05, 0.0)),
+                min(max(duration * 0.5, 0.0), max(duration - 0.05, 0.0)),
+            ])
+        )
+        for seconds in candidateSeconds {
+            if let imageRef = frameImage(for: asset, seconds: seconds, duration: duration) {
+                let image = NSImage(cgImage: imageRef, size: NSSize(width: imageRef.width, height: imageRef.height))
+                if let data = image.tiffRepresentation {
+                    return data
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func frameImage(for asset: AVURLAsset, seconds: Double, duration: Double) -> CGImage? {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 1400, height: 900)
+        let tolerance = CMTime(seconds: 0.10, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = tolerance
+        generator.requestedTimeToleranceAfter = tolerance
+
+        let safeDuration = duration.isFinite ? max(0.0, duration) : 0.0
+        let candidates = NativeOCRExtractor.frameReadCandidateTimes(
+            requestedTime: seconds,
+            duration: safeDuration,
+            frameDuration: 1.0 / 30.0
+        )
+
+        for candidate in candidates {
+            let sampleTime = CMTime(seconds: candidate, preferredTimescale: 600)
+            if let image = try? generator.copyCGImage(at: sampleTime, actualTime: nil) {
+                return image
+            }
+        }
+        return nil
+    }
+
+    private static func crop(image: CGImage, region: NormalizedRect) -> CGImage? {
+        let padded = NormalizedRect(
+            x: max(0.0, region.x - 0.015),
+            y: max(0.0, region.y - 0.015),
+            width: min(1.0 - max(0.0, region.x - 0.015), region.width + 0.03),
+            height: min(1.0 - max(0.0, region.y - 0.015), region.height + 0.03)
+        ).clamped()
+
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+        let cropRect = CGRect(
+            x: max(0, min(width - 1, width * padded.x)),
+            y: max(0, min(height - 1, height * padded.y)),
+            width: max(1, min(width, width * padded.width)),
+            height: max(1, min(height, height * padded.height))
+        ).integral
+
+        guard let cropped = image.cropping(to: cropRect) else {
+            return nil
+        }
+
+        let targetWidth = max(cropped.width * 2, 720)
+        let scale = CGFloat(targetWidth) / CGFloat(max(cropped.width, 1))
+        let targetHeight = max(Int((CGFloat(cropped.height) * scale).rounded()), cropped.height)
+        guard let context = CGContext(
+            data: nil,
+            width: targetWidth,
+            height: targetHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: targetWidth * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else {
+            return cropped
+        }
+
+        context.interpolationQuality = .high
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        return context.makeImage() ?? cropped
+    }
+
+    private static func pngBase64(from image: CGImage) -> String? {
+        let representation = NSBitmapImageRep(cgImage: image)
+        guard let data = representation.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        return data.base64EncodedString()
+    }
+
+    private static func enhancedSubtitleImage(from image: CGImage, language: TranslationLanguage) -> CGImage? {
+        guard language == .korean || language == .chinese || language == .english else {
+            return nil
+        }
+
+        let ciImage = CIImage(cgImage: image)
+        var output = ciImage.applyingFilter(
+            "CIColorControls",
+            parameters: [
+                kCIInputSaturationKey: 0.0,
+                kCIInputContrastKey: language == .english ? 1.8 : 1.65,
+                kCIInputBrightnessKey: 0.02,
+            ]
+        )
+        output = output.applyingFilter(
+            "CISharpenLuminance",
+            parameters: [
+                kCIInputSharpnessKey: language == .english ? 0.85 : 0.7,
+            ]
+        )
+        output = output.applyingFilter(
+            "CIGammaAdjust",
+            parameters: [
+                "inputPower": language == .english ? 0.82 : 0.74,
+            ]
+        )
+
+        return subtitleCIContext.createCGImage(output, from: output.extent.integral)
     }
 }

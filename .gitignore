@@ -11,3 +11,7 @@ __pycache__/
 *.swp
 *.tmp
 DerivedData/
+.backend-dist/
+.build-scratch/
+Assets/AppIcon-from-ictool.png
+Assets/AppIcon.icon.bak.*/

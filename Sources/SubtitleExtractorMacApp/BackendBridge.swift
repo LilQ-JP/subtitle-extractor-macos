@@ -39,13 +39,27 @@ final class ExtractionProgressHandlerBox: @unchecked Sendable {
     }
 }
 
+final class TranslationProgressHandlerBox: @unchecked Sendable {
+    private let handler: @MainActor (TranslationProgress) -> Void
+
+    init(handler: @escaping @MainActor (TranslationProgress) -> Void) {
+        self.handler = handler
+    }
+
+    func report(_ progress: TranslationProgress) {
+        Task { @MainActor in
+            handler(progress)
+        }
+    }
+}
+
 private final class StreamLineCollector: @unchecked Sendable {
     private let lock = NSLock()
-    private let lineHandler: (@Sendable (String) -> Void)?
+    private let lineHandler: (@Sendable (String) -> Bool)?
     private var collected = ""
     private var buffer = Data()
 
-    init(lineHandler: (@Sendable (String) -> Void)?) {
+    init(lineHandler: (@Sendable (String) -> Bool)?) {
         self.lineHandler = lineHandler
     }
 
@@ -57,7 +71,6 @@ private final class StreamLineCollector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        collected.append(String(decoding: chunk, as: UTF8.self))
         buffer.append(chunk)
 
         while let newlineRange = buffer.firstRange(of: Data([0x0A])) {
@@ -67,7 +80,11 @@ private final class StreamLineCollector: @unchecked Sendable {
             guard !line.isEmpty else {
                 continue
             }
-            lineHandler?(line)
+            let handled = lineHandler?(line) ?? false
+            if !handled {
+                collected.append(line)
+                collected.append("\n")
+            }
         }
     }
 
@@ -78,7 +95,10 @@ private final class StreamLineCollector: @unchecked Sendable {
         if !buffer.isEmpty {
             let remainingLine = String(decoding: buffer, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             if !remainingLine.isEmpty {
-                lineHandler?(remainingLine)
+                let handled = lineHandler?(remainingLine) ?? false
+                if !handled {
+                    collected.append(remainingLine)
+                }
             }
             buffer.removeAll(keepingCapacity: false)
         }
@@ -87,17 +107,55 @@ private final class StreamLineCollector: @unchecked Sendable {
     }
 }
 
+private final class StreamDataCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else {
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.append(chunk)
+    }
+
+    func finalize() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let collected = buffer
+        buffer.removeAll(keepingCapacity: false)
+        return collected
+    }
+}
+
 struct PythonBackendBridge: Sendable {
+    var isUsingBundledBackend: Bool {
+        bundledBackendExecutable() != nil
+    }
+
     func checkEnvironment() throws -> BackendRuntimeReport {
+        if let executable = bundledBackendExecutable() {
+            return BackendRuntimeReport(
+                python: "Bundled backend (\(executable.lastPathComponent))",
+                missingModules: [],
+                optionalMissingModules: ["meikiocr"]
+            )
+        }
+
         let script = """
 import importlib.util
 import json
 import os
 import sys
 
-modules = ["cv2", "PIL", "requests", "meikiocr"]
-missing = [name for name in modules if importlib.util.find_spec(name) is None]
-print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_ascii=False))
+required_modules = []
+optional_modules = ["cv2", "PIL", "meikiocr"]
+missing = [name for name in required_modules if importlib.util.find_spec(name) is None]
+optional_missing = [name for name in optional_modules if importlib.util.find_spec(name) is None]
+print(json.dumps({"python": sys.executable, "missingModules": missing, "optionalMissingModules": optional_missing}, ensure_ascii=False))
 """
         let output = try runPython(arguments: ["-c", script], includeModulePath: false)
         return try decodeOutput(BackendRuntimeReport.self, from: output)
@@ -133,10 +191,14 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
 
     func translate(
         subtitles: [SubtitleItem],
-        preferences: TranslationPreferences
-    ) throws -> [SubtitleItem] {
-        let payload = BackendSubtitlesPayload(subtitles: subtitles)
-        let input = try JSONEncoder().encode(payload)
+        preferences: TranslationPreferences,
+        progressHandler: TranslationProgressHandlerBox? = nil
+    ) async throws -> [SubtitleItem] {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let payload = BackendSubtitlesPayload(subtitles: subtitles)
+                    let input = try JSONEncoder().encode(payload)
         let output = try runBackend(
             arguments: [
                 "translate",
@@ -144,23 +206,38 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
                 "--custom-dictionary", preferences.customDictionary,
                 "--source-lang", preferences.sourceLanguage,
                 "--target-lang", preferences.targetLanguage,
+                "--use-context", preferences.useContextualTranslation ? "true" : "false",
+                "--context-window", String(max(0, preferences.contextWindow)),
+                "--preserve-slang", preferences.preserveSlangAndTone ? "true" : "false",
             ],
-            stdin: input
+            stdin: input,
+            stderrLineHandler: { line in
+                guard let progress = parseTranslationProgress(line: line) else {
+                    return false
+                }
+                progressHandler?.report(progress)
+                return true
+            }
         )
-        let decoded = try decodeOutput(BackendSubtitlesPayload.self, from: output)
-        return decoded.subtitles
+                    let decoded = try decodeOutput(BackendSubtitlesPayload.self, from: output)
+                    continuation.resume(returning: decoded.subtitles)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     func translateText(
         _ text: String,
         preferences: TranslationPreferences
-    ) throws -> String {
+    ) async throws -> String {
         let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else {
             return ""
         }
 
-        let translated = try translate(
+        let translated = try await translate(
             subtitles: [
                 SubtitleItem(
                     index: 1,
@@ -172,6 +249,73 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
             preferences: preferences
         )
         return translated.first?.translated.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    func correctOCRText(
+        _ text: String,
+        preferences: TranslationPreferences
+    ) async throws -> String {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return ""
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let input = try JSONEncoder().encode(BackendSingleTextPayload(text: normalized))
+                    let output = try runBackend(
+                        arguments: [
+                            "correct-ocr",
+                            "--model", preferences.model,
+                            "--custom-dictionary", preferences.customDictionary,
+                            "--source-lang", preferences.sourceLanguage,
+                        ],
+                        stdin: input
+                    )
+                    let decoded = try decodeOutput(BackendSingleTextPayload.self, from: output)
+                    continuation.resume(returning: decoded.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func recognizeSubtitleImages(
+        _ base64Images: [String],
+        sourceLanguage: String,
+        hintText: String,
+        model: String
+    ) async throws -> String {
+        let filteredImages = base64Images.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !filteredImages.isEmpty else {
+            return ""
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let payload = BackendVisionOCRPayload(
+                        images: filteredImages,
+                        sourceLanguage: sourceLanguage,
+                        hintText: hintText
+                    )
+                    let input = try JSONEncoder().encode(payload)
+                    let output = try runBackend(
+                        arguments: [
+                            "vision-rerecognize",
+                            "--model", model,
+                        ],
+                        stdin: input
+                    )
+                    let decoded = try decodeOutput(BackendSingleTextPayload.self, from: output)
+                    continuation.resume(returning: decoded.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     func export(
@@ -198,6 +342,8 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
                 "--format", exportPreferences.format.rawValue,
                 "--translated", exportPreferences.textMode == .translated ? "true" : "false",
                 "--wrap-width-ratio", String(processingPreferences.wrapWidthRatio),
+                "--wrap-timing-mode", processingPreferences.wrapTimingMode.rawValue,
+                "--preferred-line-count", String(processingPreferences.preferredLineCount),
                 "--font-size", String(Int(processingPreferences.subtitleFontSize.rounded())),
                 "--font-name", processingPreferences.subtitleFontName,
                 "--outline-width", String(processingPreferences.subtitleOutlineWidth),
@@ -242,9 +388,10 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
             arguments: arguments,
             stderrLineHandler: { line in
                 guard let progress = parseProgress(line: line) else {
-                    return
+                    return false
                 }
                 progressHandler?.report(progress)
+                return true
             }
         )
         return try decodeOutput(BackendExtractPayload.self, from: output)
@@ -253,8 +400,19 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
     private func runBackend(
         arguments: [String],
         stdin: Data? = nil,
-        stderrLineHandler: (@Sendable (String) -> Void)? = nil
+        stderrLineHandler: (@Sendable (String) -> Bool)? = nil
     ) throws -> String {
+        if let bundledExecutable = bundledBackendExecutable() {
+            return try runProcess(
+                executableURL: bundledExecutable,
+                arguments: arguments,
+                currentDirectoryURL: bundledExecutable.deletingLastPathComponent(),
+                environment: baseEnvironment(),
+                stdin: stdin,
+                stderrLineHandler: stderrLineHandler
+            )
+        }
+
         let scriptDirectory = try backendDirectory()
         let scriptURL = scriptDirectory.appendingPathComponent("backend_cli.py")
         guard FileManager.default.fileExists(atPath: scriptURL.path) else {
@@ -269,31 +427,46 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
         )
     }
 
-    private func runPython(
+    private func runProcess(
+        executableURL: URL,
         arguments: [String],
+        currentDirectoryURL: URL,
+        environment: [String: String],
         stdin: Data? = nil,
-        includeModulePath: Bool,
-        stderrLineHandler: (@Sendable (String) -> Void)? = nil
+        stderrLineHandler: (@Sendable (String) -> Bool)? = nil
     ) throws -> String {
-        let invocation = try resolvePythonInvocation()
-        let backendDirectory = try backendDirectory()
-
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: invocation.executable)
-        process.arguments = invocation.prefixArguments + arguments
-        process.currentDirectoryURL = backendDirectory
-        process.environment = environment(includeModulePath: includeModulePath, backendDirectory: backendDirectory)
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectoryURL
+        process.environment = environment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
+        let stdoutCollector = StreamDataCollector()
         let stderrCollector = StreamLineCollector(lineHandler: stderrLineHandler)
+
+        // Drain both pipes while the backend is running so large JSON payloads do not block process exit.
+        stdoutHandle.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            stdoutCollector.append(data)
+        }
 
         stderrHandle.readabilityHandler = { handle in
             let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
             stderrCollector.append(data)
         }
 
@@ -310,14 +483,17 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
         }
 
         process.waitUntilExit()
+        stdoutHandle.readabilityHandler = nil
         stderrHandle.readabilityHandler = nil
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdoutData = stdoutHandle.readDataToEndOfFile()
+        stdoutCollector.append(stdoutData)
         let stderrData = stderrHandle.readDataToEndOfFile()
         stderrCollector.append(stderrData)
+        let collectedStdoutData = stdoutCollector.finalize()
         let stderr = stderrCollector.finalize()
 
-        let stdout = String(decoding: stdoutData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let stdout = String(decoding: collectedStdoutData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 
         if process.terminationStatus != 0 {
             let message = !stderr.isEmpty ? stderr : (!stdout.isEmpty ? stdout : "バックエンド処理に失敗しました。")
@@ -325,6 +501,24 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
         }
 
         return stdout
+    }
+
+    private func runPython(
+        arguments: [String],
+        stdin: Data? = nil,
+        includeModulePath: Bool,
+        stderrLineHandler: (@Sendable (String) -> Bool)? = nil
+    ) throws -> String {
+        let invocation = try resolvePythonInvocation()
+        let backendDirectory = try backendDirectory()
+        return try runProcess(
+            executableURL: URL(fileURLWithPath: invocation.executable),
+            arguments: invocation.prefixArguments + arguments,
+            currentDirectoryURL: backendDirectory,
+            environment: pythonEnvironment(includeModulePath: includeModulePath, backendDirectory: backendDirectory),
+            stdin: stdin,
+            stderrLineHandler: stderrLineHandler
+        )
     }
 
     private func decodeOutput<T: Decodable>(_ type: T.Type, from output: String) throws -> T {
@@ -361,7 +555,21 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
         )
     }
 
-    private func environment(includeModulePath: Bool, backendDirectory: URL) -> [String: String] {
+    private func parseTranslationProgress(line: String) -> TranslationProgress? {
+        guard let data = line.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(BackendTranslationProgressPayload.self, from: data),
+              payload.event == "translate_progress" else {
+            return nil
+        }
+
+        return TranslationProgress(
+            processed: payload.processed,
+            total: payload.total,
+            currentText: payload.currentText
+        )
+    }
+
+    private func baseEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         let pathComponents = [
             "/opt/homebrew/bin",
@@ -376,7 +584,12 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
             .flatMap { $0.components(separatedBy: ":") }
 
         environment["PATH"] = Array(NSOrderedSet(array: pathComponents)).compactMap { $0 as? String }.joined(separator: ":")
+        environment["PYTHONNOUSERSITE"] = "1"
+        return environment
+    }
 
+    private func pythonEnvironment(includeModulePath: Bool, backendDirectory: URL) -> [String: String] {
+        var environment = baseEnvironment()
         if includeModulePath {
             let existing = environment["PYTHONPATH"].map { [$0] } ?? []
             let combined = [backendDirectory.path] + existing
@@ -388,14 +601,14 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
 
     private func resolvePythonInvocation() throws -> PythonInvocation {
         let environment = ProcessInfo.processInfo.environment
-        let directCandidates = [
+        let directCandidates = ([
             environment["SUBTITLE_APP_PYTHON"],
+        ].compactMap { $0 } + managedPythonCandidates(environment: environment) + [
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",
             "/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
             "/usr/bin/python3",
-        ]
-            .compactMap { $0 }
+        ])
 
         let manager = FileManager.default
         if let executable = directCandidates.first(where: { manager.isExecutableFile(atPath: $0) }) {
@@ -409,6 +622,45 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
         throw BackendError.pythonNotFound
     }
 
+    private func managedPythonCandidates(environment: [String: String]) -> [String] {
+        let fileManager = FileManager.default
+        var candidates: [String] = []
+
+        if let explicitEnvironmentPath = environment["CAPTION_STUDIO_PYTHON_ENV"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !explicitEnvironmentPath.isEmpty
+        {
+            candidates.append(
+                URL(fileURLWithPath: explicitEnvironmentPath, isDirectory: true)
+                    .appendingPathComponent("bin", isDirectory: true)
+                    .appendingPathComponent("python3", isDirectory: false)
+                    .path
+            )
+        }
+
+        if let applicationSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            candidates.append(
+                applicationSupportURL
+                    .appendingPathComponent(ProductConstants.appSupportFolderName, isDirectory: true)
+                    .appendingPathComponent("python-env", isDirectory: true)
+                    .appendingPathComponent("bin", isDirectory: true)
+                    .appendingPathComponent("python3", isDirectory: false)
+                    .path
+            )
+        }
+
+        candidates.append(
+            fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent(".caption-studio", isDirectory: true)
+                .appendingPathComponent("python-env", isDirectory: true)
+                .appendingPathComponent("bin", isDirectory: true)
+                .appendingPathComponent("python3", isDirectory: false)
+                .path
+        )
+
+        return Array(NSOrderedSet(array: candidates)).compactMap { $0 as? String }
+    }
+
     private func backendDirectory() throws -> URL {
         guard let resourceURL = Bundle.module.resourceURL else {
             throw BackendError.resourcesMissing("Bundle.module.resourceURL")
@@ -418,5 +670,18 @@ print(json.dumps({"python": sys.executable, "missingModules": missing}, ensure_a
             throw BackendError.resourcesMissing(directory.path)
         }
         return directory
+    }
+
+    private func bundledBackendExecutable() -> URL? {
+        guard let resourceURL = Bundle.main.resourceURL else {
+            return nil
+        }
+        let executableURL = resourceURL
+            .appendingPathComponent("BackendCLI", isDirectory: true)
+            .appendingPathComponent("SubtitleBackendCLI", isDirectory: false)
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+            return nil
+        }
+        return executableURL
     }
 }

@@ -9,6 +9,7 @@ import numpy as np
 import subprocess
 import tempfile
 import os
+import importlib
 from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Callable
@@ -55,7 +56,8 @@ class UnifiedOCR:
         
     def _init_meiki_ocr(self):
         if self._ocr_instance is None:
-            from meikiocr import MeikiOCR
+            module = importlib.import_module("meikiocr")
+            MeikiOCR = getattr(module, "MeikiOCR")
             self._ocr_instance = MeikiOCR()
         return self._ocr_instance
     

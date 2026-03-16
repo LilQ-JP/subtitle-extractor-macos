@@ -6,8 +6,31 @@ from dataclasses import asdict, dataclass
 from fractions import Fraction
 from typing import List, Optional
 
-import cv2
-from PIL import ImageFont
+try:
+    from PIL import ImageFont
+except ModuleNotFoundError:
+    ImageFont = None
+
+
+class ApproximateFont:
+    def __init__(self, size: int):
+        self.size = max(int(size), 12)
+
+    def _char_width(self, char: str) -> float:
+        if not char:
+            return 0.0
+        if char.isspace():
+            return self.size * 0.32
+        if ord(char) < 128:
+            return self.size * 0.56
+        return self.size * 0.92
+
+    def getlength(self, text: str) -> float:
+        return sum(self._char_width(char) for char in str(text or ""))
+
+    def getbbox(self, text: str):
+        width = int(round(self.getlength(text)))
+        return (0, 0, width, self.size)
 
 
 @dataclass
@@ -47,6 +70,11 @@ def subtitles_to_json(subtitles: List[SubtitleRecord]) -> List[dict]:
 
 
 def probe_video(video_path: str) -> VideoMetadata:
+    try:
+        import cv2
+    except ModuleNotFoundError as error:
+        raise RuntimeError("OpenCV が見つからないため、Python バックエンドでは動画解析できません。") from error
+
     capture = cv2.VideoCapture(video_path)
     if not capture.isOpened():
         raise RuntimeError(f"動画を開けません: {video_path}")
@@ -105,6 +133,9 @@ def _font_name_candidates(font_name: str) -> List[str]:
 
 
 def load_subtitle_font(font_size: int, font_name: Optional[str] = None):
+    if ImageFont is None:
+        return ApproximateFont(font_size)
+
     candidates: List[str] = []
     if font_name:
         candidates.extend(_font_name_candidates(font_name))
@@ -128,7 +159,10 @@ def load_subtitle_font(font_size: int, font_name: Optional[str] = None):
         except Exception:
             continue
 
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return ApproximateFont(font_size)
 
 
 def measure_text_width(text: str, font) -> float:
@@ -140,10 +174,55 @@ def measure_text_width(text: str, font) -> float:
     return float(bbox[2] - bbox[0])
 
 
-def wrap_subtitle_text(text: str, max_width_px: float, font) -> str:
+def preferred_wrap_width(
+    text: str,
+    hard_width_px: float,
+    font,
+    wrap_timing_mode: str,
+    preferred_line_count: int,
+) -> float:
+    fill_ratio = {
+        "early": 0.74,
+        "balanced": 0.86,
+        "late": 0.96,
+    }.get(str(wrap_timing_mode).strip().lower(), 0.86)
+    target_width = float(hard_width_px) * fill_ratio
+
+    if preferred_line_count > 1:
+        flattened = " ".join(segment.strip() for segment in text.splitlines()).strip()
+        total_width = measure_text_width(flattened, font)
+        if total_width > 0:
+            approximate_width = (total_width / float(preferred_line_count)) * 1.08
+            target_width = min(target_width, approximate_width)
+
+    minimum_width = min(float(hard_width_px), max(48.0, float(hard_width_px) * 0.45))
+    return min(float(hard_width_px), max(minimum_width, target_width))
+
+
+def line_count(text: str) -> int:
+    normalized = text.strip()
+    if not normalized:
+        return 0
+    return len(normalized.split("\n"))
+
+
+def wrap_subtitle_text(
+    text: str,
+    max_width_px: float,
+    font,
+    wrap_timing_mode: str = "balanced",
+    preferred_line_count: int = 0,
+) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized or max_width_px <= 0:
         return normalized
+    soft_width_px = preferred_wrap_width(
+        normalized,
+        max_width_px,
+        font,
+        wrap_timing_mode,
+        preferred_line_count,
+    )
 
     def split_long_token(token: str) -> List[str]:
         parts: List[str] = []
@@ -171,7 +250,7 @@ def wrap_subtitle_text(text: str, max_width_px: float, font) -> str:
                 wrapped.append("")
             continue
 
-        if measure_text_width(line, font) <= max_width_px:
+        if measure_text_width(line, font) <= soft_width_px:
             wrapped.append(line)
             continue
 
@@ -188,7 +267,7 @@ def wrap_subtitle_text(text: str, max_width_px: float, font) -> str:
                     continue
 
                 candidate = word if not current else f"{current} {word}"
-                if current and measure_text_width(candidate, font) > max_width_px:
+                if current and measure_text_width(candidate, font) > soft_width_px:
                     wrapped.append(current)
                     current = word
                 else:
@@ -201,7 +280,7 @@ def wrap_subtitle_text(text: str, max_width_px: float, font) -> str:
         current = ""
         for char in line:
             candidate = current + char
-            if current and measure_text_width(candidate, font) > max_width_px:
+            if current and measure_text_width(candidate, font) > soft_width_px:
                 wrapped.append(current)
                 current = char
             else:
@@ -299,6 +378,8 @@ def _formatted_text(
     subtitle: SubtitleRecord,
     translated: bool,
     wrap_width_ratio: float,
+    wrap_timing_mode: str,
+    preferred_line_count: int,
     video_width: int,
     font_size: int,
     font_name: str,
@@ -306,7 +387,13 @@ def _formatted_text(
     base_text = subtitle.translated if translated and subtitle.translated else subtitle.text
     font = load_subtitle_font(font_size, font_name=font_name)
     max_width = max(120.0, float(video_width) * max(0.3, min(wrap_width_ratio, 0.95)))
-    return wrap_subtitle_text(base_text, max_width, font)
+    return wrap_subtitle_text(
+        base_text,
+        max_width,
+        font,
+        wrap_timing_mode=wrap_timing_mode,
+        preferred_line_count=preferred_line_count,
+    )
 
 
 def write_srt(
@@ -314,6 +401,8 @@ def write_srt(
     output_path: str,
     translated: bool,
     wrap_width_ratio: float,
+    wrap_timing_mode: str,
+    preferred_line_count: int,
     video_width: int,
     font_size: int,
     font_name: str,
@@ -323,7 +412,7 @@ def write_srt(
             handle.write(f"{subtitle.index}\n")
             handle.write(f"{format_srt_time(subtitle.start_time)} --> {format_srt_time(subtitle.end_time)}\n")
             handle.write(
-                f"{_formatted_text(subtitle, translated, wrap_width_ratio, video_width, font_size, font_name)}\n\n"
+                f"{_formatted_text(subtitle, translated, wrap_width_ratio, wrap_timing_mode, preferred_line_count, video_width, font_size, font_name)}\n\n"
             )
 
 
@@ -332,6 +421,8 @@ def write_fcpxml(
     output_path: str,
     translated: bool,
     wrap_width_ratio: float,
+    wrap_timing_mode: str,
+    preferred_line_count: int,
     video_width: int,
     video_height: int,
     fps: float,
@@ -403,6 +494,8 @@ def write_fcpxml(
             subtitle,
             translated,
             wrap_width_ratio,
+            wrap_timing_mode,
+            preferred_line_count,
             video_width,
             title_font_size,
             font_name,
@@ -431,6 +524,8 @@ def write_export(
     export_format: str,
     translated: bool,
     wrap_width_ratio: float,
+    wrap_timing_mode: str,
+    preferred_line_count: int,
     video_width: int,
     video_height: int,
     fps: float,
@@ -444,6 +539,8 @@ def write_export(
             output_path=output_path,
             translated=translated,
             wrap_width_ratio=wrap_width_ratio,
+            wrap_timing_mode=wrap_timing_mode,
+            preferred_line_count=preferred_line_count,
             video_width=video_width,
             video_height=video_height,
             fps=fps,
@@ -458,6 +555,8 @@ def write_export(
         output_path=output_path,
         translated=translated,
         wrap_width_ratio=wrap_width_ratio,
+        wrap_timing_mode=wrap_timing_mode,
+        preferred_line_count=preferred_line_count,
         video_width=video_width,
         font_size=font_size,
         font_name=font_name,

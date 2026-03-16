@@ -13,9 +13,24 @@ let package = Package(
             targets: ["SubtitleExtractorMacApp"]
         ),
     ],
+    dependencies: [],
     targets: [
+        .target(
+            name: "CaptionAppearanceBridge",
+            dependencies: [],
+            path: "Sources/CaptionAppearanceBridge",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("MediaAccessibility"),
+                .linkedFramework("CoreText"),
+                .linkedFramework("CoreGraphics"),
+            ]
+        ),
         .executableTarget(
             name: "SubtitleExtractorMacApp",
+            dependencies: [
+                "CaptionAppearanceBridge",
+            ],
             path: "Sources/SubtitleExtractorMacApp",
             resources: [
                 .copy("Resources/Python"),

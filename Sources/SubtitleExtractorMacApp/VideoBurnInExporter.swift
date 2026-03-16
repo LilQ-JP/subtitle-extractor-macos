@@ -13,9 +13,9 @@ struct VideoRenderRequest {
     var fontName: String
     var fontSize: CGFloat
     var outlineWidth: CGFloat
-    var additionalSubtitleRect: NormalizedRect?
-    var additionalSubtitleFontSize: CGFloat = 22.0
-    var additionalSubtitleBackgroundOpacity: CGFloat = 0.78
+    var captionStyle: CaptionVisualStyle = .classic
+    var wrapTimingMode: WrapTimingMode = .balanced
+    var preferredLineCount: Int = 0
     var overlayImage: NSImage?
     var outputSize: CGSize?
     var videoRect: NormalizedRect?
@@ -48,7 +48,10 @@ enum VideoBurnInError: LocalizedError {
 
 @MainActor
 enum VideoBurnInExporter {
-    static func export(_ request: VideoRenderRequest) async throws {
+    static func export(
+        _ request: VideoRenderRequest,
+        progressHandler: (@MainActor @Sendable (_ fractionCompleted: Double, _ estimatedRemainingSeconds: Double?, _ elapsedSeconds: Double) -> Void)? = nil
+    ) async throws {
         guard request.format == .mp4 || request.format == .mov else {
             throw VideoBurnInError.invalidFormat
         }
@@ -63,11 +66,6 @@ enum VideoBurnInExporter {
         let renderSize = resolvedRenderSize(request.outputSize ?? orientedSize)
         let renderRect = CGRect(origin: .zero, size: renderSize)
         let subtitleFrame = pixelRect(for: request.subtitleRect, in: renderSize)
-        let additionalSubtitleFrame: CGRect? = if let additionalSubtitleRect = request.additionalSubtitleRect {
-            pixelRect(for: additionalSubtitleRect, in: renderSize)
-        } else {
-            nil
-        }
         let videoFrame = if let videoRect = request.videoRect {
             pixelRect(for: videoRect, in: renderSize)
         } else {
@@ -81,19 +79,10 @@ enum VideoBurnInExporter {
                 frame: subtitleFrame,
                 fontName: request.fontName,
                 fontSize: request.fontSize,
-                outlineWidth: request.outlineWidth
-            )
-        }
-        let preparedAdditionalSubtitles: [PreparedSubtitle] = request.subtitles.compactMap { subtitle in
-            guard let additionalSubtitleFrame else {
-                return nil
-            }
-            return preparedAdditionalSubtitle(
-                from: subtitle,
-                frame: additionalSubtitleFrame,
-                fontName: request.fontName,
-                fontSize: request.additionalSubtitleFontSize,
-                backgroundOpacity: request.additionalSubtitleBackgroundOpacity
+                outlineWidth: request.outlineWidth,
+                style: request.captionStyle,
+                wrapTimingMode: request.wrapTimingMode,
+                preferredLineCount: request.preferredLineCount
             )
         }
         let usesOverlayLayout = request.videoRect != nil
@@ -118,13 +107,6 @@ enum VideoBurnInExporter {
 
             if let overlayImage {
                 outputImage = overlayImage.composited(over: outputImage)
-            }
-
-            for subtitle in preparedAdditionalSubtitles where subtitle.contains(time: seconds) {
-                let additionalSubtitle = subtitle.image.transformed(
-                    by: CGAffineTransform(translationX: subtitle.frame.minX, y: subtitle.frame.minY)
-                )
-                outputImage = additionalSubtitle.composited(over: outputImage)
             }
 
             for subtitle in preparedSubtitles where subtitle.contains(time: seconds) {
@@ -158,7 +140,7 @@ enum VideoBurnInExporter {
         exportSession.videoComposition = videoComposition
         exportSession.shouldOptimizeForNetworkUse = request.format == .mp4
 
-        try await exportSession.exportChecked()
+        try await exportSession.exportChecked(progressHandler: progressHandler)
     }
 
     private static func preparedSubtitle(
@@ -167,7 +149,10 @@ enum VideoBurnInExporter {
         frame: CGRect,
         fontName: String,
         fontSize: CGFloat,
-        outlineWidth: CGFloat
+        outlineWidth: CGFloat,
+        style: CaptionVisualStyle,
+        wrapTimingMode: WrapTimingMode,
+        preferredLineCount: Int
     ) -> PreparedSubtitle? {
         let baseText = if mode == .translated && !subtitle.translated.isEmpty {
             subtitle.translated
@@ -180,7 +165,9 @@ enum VideoBurnInExporter {
             regionSize: frame.size,
             fontName: fontName,
             preferredFontSize: fontSize,
-            outlineWidth: outlineWidth
+            outlineWidth: outlineWidth,
+            timingMode: wrapTimingMode,
+            preferredLineCount: preferredLineCount
         )
 
         guard !fittedLayout.text.isEmpty,
@@ -189,49 +176,8 @@ enum VideoBurnInExporter {
                   size: frame.size,
                   fontName: fontName,
                   fontSize: CGFloat(fittedLayout.fontSize),
-                  outlineWidth: CGFloat(fittedLayout.outlineWidth)
-              ) else {
-            return nil
-        }
-
-        return PreparedSubtitle(
-            startTime: subtitle.startTime,
-            endTime: subtitle.endTime,
-            frame: frame,
-            image: scaledSubtitleImage(
-                CIImage(cgImage: subtitleImage),
-                targetSize: frame.size
-            )
-        )
-    }
-
-    private static func preparedAdditionalSubtitle(
-        from subtitle: SubtitleItem,
-        frame: CGRect,
-        fontName: String,
-        fontSize: CGFloat,
-        backgroundOpacity: CGFloat
-    ) -> PreparedSubtitle? {
-        let baseText = subtitle.additionalText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !baseText.isEmpty else {
-            return nil
-        }
-
-        let fittedLayout = SubtitleUtilities.fitSubtitleLayout(
-            text: baseText,
-            regionSize: frame.size,
-            fontName: fontName,
-            preferredFontSize: fontSize,
-            outlineWidth: 0
-        )
-
-        guard !fittedLayout.text.isEmpty,
-              let subtitleImage = SubtitleUtilities.additionalSubtitleBannerImage(
-                  text: fittedLayout.text,
-                  size: frame.size,
-                  fontName: fontName,
-                  fontSize: CGFloat(fittedLayout.fontSize),
-                  backgroundOpacity: backgroundOpacity
+                  outlineWidth: CGFloat(fittedLayout.outlineWidth),
+                  style: style
               ) else {
             return nil
         }
@@ -351,8 +297,34 @@ private struct PreparedSubtitle {
 }
 
 private extension AVAssetExportSession {
-    func exportChecked() async throws {
+    func exportChecked(
+        progressHandler: (@MainActor @Sendable (_ fractionCompleted: Double, _ estimatedRemainingSeconds: Double?, _ elapsedSeconds: Double) -> Void)? = nil
+    ) async throws {
         let box = ExportSessionBox(session: self)
+        let startedAt = Date()
+        let progressTask = Task.detached(priority: .utility) { [box] in
+            while !Task.isCancelled {
+                let fractionCompleted = Double(box.session.progress)
+                let elapsedSeconds = Date().timeIntervalSince(startedAt)
+                let estimatedRemainingSeconds: Double? = if fractionCompleted > 0.01 {
+                    max(0.0, elapsedSeconds * (1.0 - fractionCompleted) / fractionCompleted)
+                } else {
+                    nil
+                }
+                if let progressHandler {
+                    await progressHandler(fractionCompleted, estimatedRemainingSeconds, elapsedSeconds)
+                }
+
+                switch box.session.status {
+                case .waiting, .exporting:
+                    try? await Task.sleep(for: .milliseconds(250))
+                default:
+                    return
+                }
+            }
+        }
+        defer { progressTask.cancel() }
+
         try await withCheckedThrowingContinuation { continuation in
             box.session.exportAsynchronously {
                 switch box.session.status {
@@ -366,6 +338,11 @@ private extension AVAssetExportSession {
                     continuation.resume(throwing: VideoBurnInError.exportFailed("動画書き出しが途中で終了しました。"))
                 }
             }
+        }
+
+        if let progressHandler {
+            let elapsedSeconds = Date().timeIntervalSince(startedAt)
+            await progressHandler(1.0, 0.0, elapsedSeconds)
         }
     }
 }

@@ -1,0 +1,138 @@
+{
+  "fill" : {
+    "automatic-gradient" : "display-p3:0.97735,0.98693,0.98693,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "soft-light"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "normal"
+            }
+          ],
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.00000,0.00000,0.00000,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "Vector-A.png",
+          "name" : "Vector-A",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              130.90625,
+              134
+            ]
+          }
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.13420,0.13859,0.13665,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "hidden" : true,
+          "image-name" : "Vector-frame.png",
+          "name" : "Vector-frame",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "blend-mode-specializations" : [
+            {
+              "value" : "soft-light"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "darken"
+            }
+          ],
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.10504,0.06192,0.03473,1.00000"
+              }
+            }
+          ],
+          "image-name" : "Vector-文.png",
+          "name" : "Vector-文",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -137.09375,
+              -153
+            ]
+          }
+        },
+        {
+          "blend-mode" : "darken",
+          "glass" : true,
+          "image-name" : "Vector-back.png",
+          "name" : "Vector-back",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              95.90625,
+              98.015625
+            ]
+          }
+        },
+        {
+          "image-name" : "Vector-back-left.png",
+          "name" : "Vector-back-left",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -95.77266838466517,
+              -88.6452220004827
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
