@@ -39,7 +39,7 @@ final class SubtitleUtilitiesTests: XCTestCase {
         XCTAssertGreaterThan(normalized[1].endTime, normalized[1].startTime)
     }
 
-    func testTimingNormalizationBridgesGapToNextSubtitle() {
+    func testTimingNormalizationPreservesExistingGap() {
         let subtitles = [
             SubtitleItem(index: 1, startTime: 4.0, endTime: 4.6, text: "A"),
             SubtitleItem(index: 2, startTime: 7.0, endTime: 7.8, text: "B"),
@@ -52,8 +52,8 @@ final class SubtitleUtilitiesTests: XCTestCase {
             timelineEnd: 12.0
         )
 
-        XCTAssertEqual(normalized[0].endTime, 6.99, accuracy: 0.02)
-        XCTAssertEqual(normalized[1].endTime, 11.99, accuracy: 0.02)
+        XCTAssertEqual(normalized[0].endTime, 4.6, accuracy: 0.02)
+        XCTAssertEqual(normalized[1].endTime, 7.8, accuracy: 0.02)
     }
 
     func testSubtitleLookupMatchesPlaybackTime() {
@@ -220,6 +220,50 @@ final class SubtitleUtilitiesTests: XCTestCase {
         XCTAssertEqual(payload.processed, 2)
         XCTAssertEqual(payload.total, 5)
         XCTAssertEqual(payload.currentText, "ありがとう")
+    }
+
+    func testUpdateInstallerDownloadAndStorePreservesDownloadedFile() async throws {
+        let workingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let sourceURL = workingDirectory.appendingPathComponent("CaptionStudio-9.9.9-macOS.pkg")
+        let updatesDirectory = workingDirectory.appendingPathComponent("Updates", isDirectory: true)
+        let expectedData = Data("caption-studio-update".utf8)
+
+        try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+        try expectedData.write(to: sourceURL, options: .atomic)
+
+        let previousOverride = getenv("CAPTIONSTUDIO_UPDATES_DIR_OVERRIDE").map { String(cString: $0) }
+        setenv("CAPTIONSTUDIO_UPDATES_DIR_OVERRIDE", updatesDirectory.path, 1)
+        defer {
+            if let previousOverride {
+                setenv("CAPTIONSTUDIO_UPDATES_DIR_OVERRIDE", previousOverride, 1)
+            } else {
+                unsetenv("CAPTIONSTUDIO_UPDATES_DIR_OVERRIDE")
+            }
+            try? FileManager.default.removeItem(at: workingDirectory)
+        }
+
+        let asset = AppUpdateAsset(
+            name: "CaptionStudio-9.9.9-macOS.pkg",
+            downloadURL: sourceURL,
+            contentType: "application/octet-stream",
+            size: Int64(expectedData.count),
+            digest: nil
+        )
+        let update = AppUpdateInfo(
+            title: "Caption Studio 9.9.9",
+            version: "9.9.9",
+            releaseNotes: "",
+            publishedAt: nil,
+            releasePageURL: ProductConstants.releasesPageURL,
+            assets: [asset]
+        )
+
+        let storedURL = try await UpdateInstaller.downloadAndStore(update: update)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedURL.path))
+        XCTAssertEqual(try Data(contentsOf: storedURL), expectedData)
+        XCTAssertEqual(UpdateInstaller.storedUpdateURL(for: update), storedURL)
     }
 
     func testProjectDocumentRoundTrip() throws {
@@ -832,6 +876,7 @@ final class SubtitleUtilitiesTests: XCTestCase {
         state.sharePreReleaseAnalytics = true
         state.includeDiagnosticsInFeedback = false
         state.preferredVisionModel = "qwen2.5vl"
+        state.importedFontPaths = ["/tmp/FontA.otf", "/tmp/FontB.ttf"]
 
         let encoded = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(PersistentAppState.self, from: encoded)
@@ -845,6 +890,7 @@ final class SubtitleUtilitiesTests: XCTestCase {
         XCTAssertTrue(decoded.sharePreReleaseAnalytics)
         XCTAssertFalse(decoded.includeDiagnosticsInFeedback)
         XCTAssertEqual(decoded.preferredVisionModel, "qwen2.5vl")
+        XCTAssertEqual(decoded.importedFontPaths, ["/tmp/FontA.otf", "/tmp/FontB.ttf"])
     }
 
     func testPersistentAppStateStoresUpdatePreferences() throws {
@@ -870,6 +916,52 @@ final class SubtitleUtilitiesTests: XCTestCase {
         XCTAssertEqual(decoded.downloadedUpdatePath, "/tmp/CaptionStudio-macOS.pkg")
         XCTAssertNotNil(decoded.lastUpdateCheckAt)
         XCTAssertEqual(decoded.lastUpdateCheckAt!.timeIntervalSince1970, 1_700_000_000, accuracy: 0.1)
+    }
+
+    func testPersistentStateStoreRoundTripUsesApplicationSupportFile() throws {
+        let workingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+
+        let previousOverride = getenv("CAPTIONSTUDIO_APP_SUPPORT_DIR_OVERRIDE").map { String(cString: $0) }
+        setenv("CAPTIONSTUDIO_APP_SUPPORT_DIR_OVERRIDE", workingDirectory.path, 1)
+        defer {
+            if let previousOverride {
+                setenv("CAPTIONSTUDIO_APP_SUPPORT_DIR_OVERRIDE", previousOverride, 1)
+            } else {
+                unsetenv("CAPTIONSTUDIO_APP_SUPPORT_DIR_OVERRIDE")
+            }
+            try? PersistentStateStore.clear()
+            try? FileManager.default.removeItem(at: workingDirectory)
+        }
+
+        var state = PersistentAppState()
+        state.appLanguage = .korean
+        state.captionStylePreset = .youtube
+        state.overlayTolerance = 0.22
+        state.overlayPresets = [
+            OverlayPreset(
+                name: "Overlay A",
+                path: "/tmp/overlay-a.png",
+                keyColor: .greenScreen,
+                tolerance: 0.22,
+                softness: 0.09,
+                videoRect: NormalizedRect(x: 0.1, y: 0.1, width: 0.8, height: 0.7),
+                videoOffset: SavedSize(),
+                videoZoom: 1.0,
+                subtitleRect: NormalizedRect(x: 0.1, y: 0.8, width: 0.8, height: 0.12)
+            ),
+        ]
+
+        try PersistentStateStore.save(state)
+        let restored = try PersistentStateStore.load()
+
+        XCTAssertNotNil(restored)
+        XCTAssertEqual(restored?.appLanguage, .korean)
+        XCTAssertEqual(restored?.captionStylePreset, .youtube)
+        XCTAssertEqual(restored?.overlayTolerance ?? 0.0, 0.22, accuracy: 0.0001)
+        XCTAssertEqual(restored?.overlayPresets.first?.name, "Overlay A")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: PersistentStateStore.fileURL().path))
     }
 
     func testUpdateCheckerPrefersPkgAssetFromGitHubRelease() throws {
@@ -1263,10 +1355,30 @@ final class SubtitleUtilitiesTests: XCTestCase {
 
         viewModel.updateSelectedSubtitlesEnd(to: 3.4)
 
-        XCTAssertEqual(viewModel.subtitles[0].endTime, 2.49, accuracy: 0.001)
+        XCTAssertEqual(viewModel.subtitles[0].endTime, 2.0, accuracy: 0.001)
         XCTAssertEqual(viewModel.subtitles[1].endTime, 3.4, accuracy: 0.001)
         XCTAssertEqual(viewModel.selectedSubtitleIDs, Set([first.id, second.id]))
         XCTAssertEqual(viewModel.selectedSubtitleID, first.id)
+    }
+
+    @MainActor
+    func testApplySelectedSubtitleEditsPreservesManualGap() {
+        let viewModel = AppViewModel()
+        let first = SubtitleItem(index: 1, startTime: 1.0, endTime: 2.0, text: "A")
+        let second = SubtitleItem(index: 2, startTime: 3.0, endTime: 4.0, text: "B")
+        viewModel.subtitles = [first, second]
+        viewModel.selectedSubtitleID = first.id
+
+        viewModel.applySelectedSubtitleEdits(
+            startText: "00:00:01.20",
+            endText: "00:00:02.20",
+            originalText: "A",
+            translatedText: ""
+        )
+
+        XCTAssertEqual(viewModel.subtitles[0].startTime, 1.2, accuracy: 0.001)
+        XCTAssertEqual(viewModel.subtitles[0].endTime, 2.2, accuracy: 0.001)
+        XCTAssertEqual(viewModel.subtitles[1].startTime, 3.0, accuracy: 0.001)
     }
 
     @MainActor

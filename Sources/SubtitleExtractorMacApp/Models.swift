@@ -1062,6 +1062,7 @@ struct PersistentAppState: Codable, Hashable, Sendable {
     var additionalSubtitleLayoutRect = NormalizedRect.defaultAdditionalBannerArea
     var overlayEditMode: OverlayEditMode = .videoPosition
     var favoriteFontNames: [String] = []
+    var importedFontPaths: [String] = []
     var overlayPresets: [OverlayPreset] = []
     var currentOverlayPath: String?
 
@@ -1111,6 +1112,7 @@ struct PersistentAppState: Codable, Hashable, Sendable {
         case additionalSubtitleLayoutRect
         case overlayEditMode
         case favoriteFontNames
+        case importedFontPaths
         case overlayPresets
         case currentOverlayPath
     }
@@ -1164,6 +1166,7 @@ struct PersistentAppState: Codable, Hashable, Sendable {
         additionalSubtitleLayoutRect = try container.decodeIfPresent(NormalizedRect.self, forKey: .additionalSubtitleLayoutRect) ?? .defaultAdditionalBannerArea
         overlayEditMode = try container.decodeIfPresent(OverlayEditMode.self, forKey: .overlayEditMode) ?? .videoPosition
         favoriteFontNames = try container.decodeIfPresent([String].self, forKey: .favoriteFontNames) ?? []
+        importedFontPaths = try container.decodeIfPresent([String].self, forKey: .importedFontPaths) ?? []
         overlayPresets = try container.decodeIfPresent([OverlayPreset].self, forKey: .overlayPresets) ?? []
         currentOverlayPath = try container.decodeIfPresent(String.self, forKey: .currentOverlayPath)
     }
@@ -1215,6 +1218,7 @@ struct PersistentAppState: Codable, Hashable, Sendable {
         try container.encode(additionalSubtitleLayoutRect, forKey: .additionalSubtitleLayoutRect)
         try container.encode(overlayEditMode, forKey: .overlayEditMode)
         try container.encode(favoriteFontNames, forKey: .favoriteFontNames)
+        try container.encode(importedFontPaths, forKey: .importedFontPaths)
         try container.encode(overlayPresets, forKey: .overlayPresets)
         try container.encodeIfPresent(currentOverlayPath, forKey: .currentOverlayPath)
     }

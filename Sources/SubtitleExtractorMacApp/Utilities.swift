@@ -319,7 +319,8 @@ enum SubtitleUtilities {
         _ subtitles: [SubtitleItem],
         minDuration: Double,
         maxDuration: Double,
-        timelineEnd: Double?
+        timelineEnd: Double?,
+        preserveGaps: Bool = true
     ) -> [SubtitleItem] {
         guard !subtitles.isEmpty else {
             return subtitles
@@ -367,22 +368,24 @@ enum SubtitleUtilities {
                 subtitle.endTime = max(subtitle.endTime, max(subtitle.startTime + epsilon, desiredEnd))
             }
 
-            if let nextStart {
-                let bridgedEnd: Double
-                if maxDuration > 0 {
-                    bridgedEnd = min(nextStart - epsilon, subtitle.startTime + maxDuration)
-                } else {
-                    bridgedEnd = nextStart - epsilon
+            if !preserveGaps {
+                if let nextStart {
+                    let bridgedEnd: Double
+                    if maxDuration > 0 {
+                        bridgedEnd = min(nextStart - epsilon, subtitle.startTime + maxDuration)
+                    } else {
+                        bridgedEnd = nextStart - epsilon
+                    }
+                    subtitle.endTime = max(subtitle.endTime, max(subtitle.startTime + epsilon, bridgedEnd))
+                } else if let timelineEnd {
+                    let trailingEnd: Double
+                    if maxDuration > 0 {
+                        trailingEnd = min(timelineEnd, subtitle.startTime + maxDuration)
+                    } else {
+                        trailingEnd = timelineEnd
+                    }
+                    subtitle.endTime = max(subtitle.endTime, max(subtitle.startTime + epsilon, trailingEnd))
                 }
-                subtitle.endTime = max(subtitle.endTime, max(subtitle.startTime + epsilon, bridgedEnd))
-            } else if let timelineEnd {
-                let trailingEnd: Double
-                if maxDuration > 0 {
-                    trailingEnd = min(timelineEnd, subtitle.startTime + maxDuration)
-                } else {
-                    trailingEnd = timelineEnd
-                }
-                subtitle.endTime = max(subtitle.endTime, max(subtitle.startTime + epsilon, trailingEnd))
             }
 
             if let nextStart {

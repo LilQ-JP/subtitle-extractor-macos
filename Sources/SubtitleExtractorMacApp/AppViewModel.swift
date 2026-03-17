@@ -153,9 +153,8 @@ final class AppViewModel: ObservableObject {
             initialValue: "Hiragino Sans"
         )
         appLanguage = AppLanguage(storedRawValue: UserDefaults.standard.string(forKey: AppLanguage.defaultsKey))
-        restoreImportedFonts()
-        refreshAvailableFonts(preferredSelection: nil)
         restorePersistentState()
+        refreshAvailableFonts(preferredSelection: subtitleFontName)
         setupPersistence()
         suppressPersistence = false
         refreshSystemCaptionAppearance()
@@ -2015,17 +2014,60 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        let trimmedOriginal = originalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTranslated = translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var updatedSubtitles = subtitles
+        updatedSubtitles[index].startTime = startTime
+        updatedSubtitles[index].endTime = endTime
+        updatedSubtitles[index].text = trimmedOriginal
+        updatedSubtitles[index].translated = trimmedTranslated
+        updatedSubtitles = normalizedSubtitles(from: updatedSubtitles)
+        guard let normalizedIndex = updatedSubtitles.firstIndex(where: { $0.id == selectedSubtitleID }) else {
+            return
+        }
+
+        let current = subtitles[index]
+        let updated = updatedSubtitles[normalizedIndex]
+        let timingChanged = abs(current.startTime - updated.startTime) > 0.0005 || abs(current.endTime - updated.endTime) > 0.0005
+        let textChanged = current.text != updated.text || current.translated != updated.translated
+        guard timingChanged || textChanged else {
+            return
+        }
+
         let previousSnapshot = makeSubtitleUndoSnapshot()
-        subtitles[index].startTime = startTime
-        subtitles[index].endTime = endTime
-        subtitles[index].text = originalText.trimmingCharacters(in: .whitespacesAndNewlines)
-        subtitles[index].translated = translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        subtitles = normalizedSubtitles(from: subtitles)
+        subtitles = updatedSubtitles
         let restoredSelection = selectedSubtitleIDs.isEmpty ? Set([selectedSubtitleID]) : selectedSubtitleIDs
         setSelectedSubtitleIDs(restoredSelection, primary: selectedSubtitleID, seek: false)
         registerUndoSnapshot(previousSnapshot, actionName: "字幕編集")
         statusMessage = "字幕を更新しました。"
         seekToSelectedSubtitle()
+    }
+
+    func updateSubtitleTiming(id: SubtitleItem.ID, startTime: Double, endTime: Double) {
+        guard let index = subtitles.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        var updatedSubtitles = subtitles
+        updatedSubtitles[index].startTime = startTime
+        updatedSubtitles[index].endTime = endTime
+        updatedSubtitles = normalizedSubtitles(from: updatedSubtitles)
+        guard let normalizedIndex = updatedSubtitles.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let current = subtitles[index]
+        let updated = updatedSubtitles[normalizedIndex]
+        guard abs(current.startTime - updated.startTime) > 0.0005 || abs(current.endTime - updated.endTime) > 0.0005 else {
+            return
+        }
+
+        let previousSnapshot = makeSubtitleUndoSnapshot()
+        subtitles = updatedSubtitles
+        let restoredSelection = selectedSubtitleIDs.isEmpty ? Set([id]) : selectedSubtitleIDs
+        setSelectedSubtitleIDs(restoredSelection, primary: id, seek: false)
+        registerUndoSnapshot(previousSnapshot, actionName: "字幕時間編集")
+        statusMessage = "字幕の時間を更新しました。"
     }
 
     func nudgeSelectedSubtitleStart(by delta: Double) {
@@ -3198,10 +3240,6 @@ final class AppViewModel: ObservableObject {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
 
-        if availableFontNames.contains(subtitleFontName) == false {
-            refreshAvailableFonts(preferredSelection: subtitleFontName)
-        }
-
         if let currentOverlayPath = state.currentOverlayPath {
             let url = URL(fileURLWithPath: currentOverlayPath)
             if FileManager.default.fileExists(atPath: url.path) {
@@ -3919,9 +3957,12 @@ final class AppViewModel: ObservableObject {
         }
 
         do {
-            let encoded = try JSONEncoder().encode(makePersistentState())
+            let state = makePersistentState()
+            let encoded = try JSONEncoder().encode(state)
+            try PersistentStateStore.save(state)
             UserDefaults.standard.set(encoded, forKey: persistentStateDefaultsKey)
             UserDefaults.standard.set(appLanguage.rawValue, forKey: AppLanguage.defaultsKey)
+            persistImportedFonts()
         } catch {
             statusMessage = "設定の保存に失敗しました。"
         }
@@ -3974,19 +4015,33 @@ final class AppViewModel: ObservableObject {
         state.additionalSubtitleLayoutRect = additionalSubtitleLayoutRect
         state.overlayEditMode = overlayEditMode == .additionalSubtitleWindow ? .subtitleWindow : overlayEditMode
         state.favoriteFontNames = favoriteFontNames
+        state.importedFontPaths = importedFontFiles.map(\.path)
         state.overlayPresets = overlayPresets
         state.currentOverlayPath = currentOverlayURL?.path
         return state
     }
 
     private func restorePersistentState() {
-        guard let data = UserDefaults.standard.data(forKey: persistentStateDefaultsKey),
-              let state = try? JSONDecoder().decode(PersistentAppState.self, from: data) else {
+        let fileState = try? PersistentStateStore.load()
+        let userDefaultsState = UserDefaults.standard.data(forKey: persistentStateDefaultsKey)
+            .flatMap { try? JSONDecoder().decode(PersistentAppState.self, from: $0) }
+
+        if let storedState = fileState ?? userDefaultsState {
+            applyPersistentState(storedState)
+            restoreImportedFonts(
+                from: storedState.importedFontPaths,
+                fallbackToLegacyDefaults: fileState == nil
+            )
+            UserDefaults.standard.set(appLanguage.rawValue, forKey: AppLanguage.defaultsKey)
+            if fileState == nil {
+                try? PersistentStateStore.save(makePersistentState())
+            }
+            refreshUpdateRuntimeSummary()
             return
         }
-        applyPersistentState(state)
-        UserDefaults.standard.set(appLanguage.rawValue, forKey: AppLanguage.defaultsKey)
-        refreshUpdateRuntimeSummary()
+
+        restoreImportedFonts(from: [], fallbackToLegacyDefaults: true)
+        try? PersistentStateStore.save(makePersistentState())
     }
 
     private func applyAvailableTranslationModels(_ payload: BackendOllamaModelsPayload?) {
@@ -4060,9 +4115,17 @@ final class AppViewModel: ObservableObject {
         return (loadedURLs, failedFiles)
     }
 
-    private func restoreImportedFonts() {
-        let storedPaths = UserDefaults.standard.stringArray(forKey: importedFontsDefaultsKey) ?? []
-        let urls = storedPaths.map(URL.init(fileURLWithPath:)).filter { FileManager.default.fileExists(atPath: $0.path) }
+    private func restoreImportedFonts(from storedPaths: [String], fallbackToLegacyDefaults: Bool) {
+        let resolvedStoredPaths: [String]
+        if !storedPaths.isEmpty {
+            resolvedStoredPaths = storedPaths
+        } else if fallbackToLegacyDefaults {
+            resolvedStoredPaths = UserDefaults.standard.stringArray(forKey: importedFontsDefaultsKey) ?? []
+        } else {
+            resolvedStoredPaths = []
+        }
+
+        let urls = resolvedStoredPaths.map(URL.init(fileURLWithPath:)).filter { FileManager.default.fileExists(atPath: $0.path) }
         let (loadedURLs, _) = registerFontFiles(urls)
         importedFontFiles = Array(Set(loadedURLs)).sorted { $0.lastPathComponent < $1.lastPathComponent }
         persistImportedFonts()

@@ -7,9 +7,28 @@ enum ProductConstants {
     static let projectFileExtension = "subtitleproject"
     static let appSupportFolderName = "CaptionStudio"
     static let autosaveFilename = "Autosave.subtitleproject"
+    static let persistentStateFilename = "PersistentState.json"
     static let stableReleaseAPIURL = URL(string: "https://api.github.com/repos/LilQ-JP/subtitle-extractor-macos/releases/latest")!
     static let releasesAPIURL = URL(string: "https://api.github.com/repos/LilQ-JP/subtitle-extractor-macos/releases")!
     static let releasesPageURL = URL(string: "https://github.com/LilQ-JP/subtitle-extractor-macos/releases")!
+}
+
+enum AppSupportStore {
+    private static let overrideEnvironmentKey = "CAPTIONSTUDIO_APP_SUPPORT_DIR_OVERRIDE"
+
+    static func directoryURL() -> URL {
+        let folderURL: URL
+        if let overridePath = ProcessInfo.processInfo.environment[overrideEnvironmentKey],
+           !overridePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            folderURL = URL(fileURLWithPath: overridePath, isDirectory: true)
+        } else {
+            let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            folderURL = baseURL.appendingPathComponent(ProductConstants.appSupportFolderName, isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true, attributes: nil)
+        return folderURL
+    }
 }
 
 struct SubtitleUndoSnapshot: Sendable {
@@ -147,11 +166,7 @@ enum ProjectStore {
     }
 
     private static func autosaveURL() -> URL {
-        let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let folderURL = baseURL.appendingPathComponent(ProductConstants.appSupportFolderName, isDirectory: true)
-        try? FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true, attributes: nil)
-        return folderURL.appendingPathComponent(ProductConstants.autosaveFilename)
+        AppSupportStore.directoryURL().appendingPathComponent(ProductConstants.autosaveFilename)
     }
 
     static func normalizedProjectURL(for url: URL) -> URL {
@@ -172,6 +187,46 @@ enum ProjectStore {
         let hasPersistentState = dictionary["persistentState"] is [String: Any]
         let hasProjectMetadata = dictionary["videoPath"] != nil || dictionary["selectedSubtitleID"] != nil || dictionary["selectedSubtitleIDs"] != nil || dictionary["savedAt"] != nil
         return hasSubtitleArray && (hasPersistentState || hasProjectMetadata)
+    }
+}
+
+enum PersistentStateStore {
+    private static let encoder = JSONEncoder()
+    private static let decoder = JSONDecoder()
+
+    static func load() throws -> PersistentAppState? {
+        let url = fileURL()
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty else {
+            return nil
+        }
+        return try decoder.decode(PersistentAppState.self, from: data)
+    }
+
+    static func save(_ state: PersistentAppState) throws {
+        let url = fileURL()
+        let data = try encoder.encode(state)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+        try data.write(to: url, options: .atomic)
+    }
+
+    static func clear() throws {
+        let url = fileURL()
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+        try FileManager.default.removeItem(at: url)
+    }
+
+    static func fileURL() -> URL {
+        AppSupportStore.directoryURL().appendingPathComponent(ProductConstants.persistentStateFilename)
     }
 }
 
@@ -542,12 +597,17 @@ enum UpdateChecker {
 }
 
 enum UpdateInstaller {
+    private static let updatesDirectoryOverrideEnvironmentKey = "CAPTIONSTUDIO_UPDATES_DIR_OVERRIDE"
+
     static func updatesDirectory() -> URL {
-        let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let folderURL = baseURL
-            .appendingPathComponent(ProductConstants.appSupportFolderName, isDirectory: true)
-            .appendingPathComponent("Updates", isDirectory: true)
+        let folderURL: URL
+        if let overrideDirectory = getenv(updatesDirectoryOverrideEnvironmentKey).map({ String(cString: $0) }),
+           !overrideDirectory.isEmpty {
+            folderURL = URL(fileURLWithPath: overrideDirectory, isDirectory: true)
+        } else {
+            folderURL = AppSupportStore.directoryURL()
+                .appendingPathComponent("Updates", isDirectory: true)
+        }
         try? FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
         return folderURL
     }
@@ -638,8 +698,9 @@ enum UpdateInstaller {
     }
 }
 
-private final class UpdateDownloadSession: NSObject, URLSessionDownloadDelegate {
+private final class UpdateDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let progressHandler: @Sendable (Double) -> Void
+    private var session: URLSession?
     private nonisolated(unsafe) var continuation: CheckedContinuation<URL, Error>?
     private nonisolated(unsafe) var hasFinished = false
 
@@ -648,10 +709,16 @@ private final class UpdateDownloadSession: NSObject, URLSessionDownloadDelegate 
         super.init()
     }
 
+    deinit {
+        session?.invalidateAndCancel()
+    }
+
     func download(from url: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
+            hasFinished = false
             self.continuation = continuation
             let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+            self.session = session
             let task = session.downloadTask(with: url)
             task.resume()
         }
@@ -677,7 +744,19 @@ private final class UpdateDownloadSession: NSObject, URLSessionDownloadDelegate 
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        finish(with: .success(location))
+        let preservedURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(location.pathExtension.isEmpty ? "download" : location.pathExtension)
+
+        do {
+            if FileManager.default.fileExists(atPath: preservedURL.path) {
+                try FileManager.default.removeItem(at: preservedURL)
+            }
+            try FileManager.default.moveItem(at: location, to: preservedURL)
+            finish(with: .success(preservedURL))
+        } catch {
+            finish(with: .failure(error))
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -691,6 +770,8 @@ private final class UpdateDownloadSession: NSObject, URLSessionDownloadDelegate 
             return
         }
         hasFinished = true
+        session?.finishTasksAndInvalidate()
+        session = nil
 
         switch result {
         case .success(let url):

@@ -2397,6 +2397,11 @@ struct ContentView: View {
 private struct SubtitleEditorView: View {
     @ObservedObject var viewModel: AppViewModel
 
+    private enum TimingDraftField {
+        case start
+        case end
+    }
+
     @State private var startText = ""
     @State private var endText = ""
     @State private var originalText = ""
@@ -2465,21 +2470,25 @@ private struct SubtitleEditorView: View {
                 if editableSubtitle != nil {
                     Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                         GridRow {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(tr("開始", "Start", "开始", "시작"))
-                                    .font(.subheadline.weight(.medium))
-                                AppKitTextField(text: startBinding, placeholder: "00:00:00.00")
-                                    .frame(height: 28)
+                            timingEditor(
+                                title: tr("開始", "Start", "开始", "시작"),
+                                text: startBinding,
+                                onCommit: commitTimingDraftIfPossible
+                            ) { delta in
+                                nudgeTimingDraft(.start, by: delta)
                             }
 
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(tr("終了", "End", "结束", "종료"))
-                                    .font(.subheadline.weight(.medium))
-                                AppKitTextField(text: endBinding, placeholder: "00:00:00.00")
-                                    .frame(height: 28)
+                            timingEditor(
+                                title: tr("終了", "End", "结束", "종료"),
+                                text: endBinding,
+                                onCommit: commitTimingDraftIfPossible
+                            ) { delta in
+                                nudgeTimingDraft(.end, by: delta)
                             }
                         }
                     }
+
+                    timingHintView
 
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -2625,6 +2634,94 @@ private struct SubtitleEditorView: View {
 
     private var translatedBinding: Binding<String> {
         Binding(get: { translatedText }, set: { translatedText = $0; isDirty = true })
+    }
+
+    @ViewBuilder
+    private var timingHintView: some View {
+        HStack(spacing: 12) {
+            if let startTime = SubtitleUtilities.parseTimecode(startText),
+               let endTime = SubtitleUtilities.parseTimecode(endText) {
+                let duration = max(0.0, endTime - startTime)
+                Label(
+                    "\(tr("長さ", "Length", "时长", "길이")) \(SubtitleUtilities.compactTimestamp(duration))",
+                    systemImage: "timer"
+                )
+            }
+
+            Text(
+                tr(
+                    "秒だけの入力でもOKです。下のボタンで 0.1 秒 / 1 秒ずつ動かせます。",
+                    "Seconds-only input works too. Use the buttons below to nudge by 0.1s or 1s.",
+                    "只输入秒数也可以。可用下方按钮按 0.1 秒或 1 秒微调。",
+                    "초만 입력해도 됩니다. 아래 버튼으로 0.1초 / 1초씩 미세 조정할 수 있습니다."
+                )
+            )
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    private func timingEditor(
+        title: String,
+        text: Binding<String>,
+        onCommit: @escaping () -> Void,
+        onNudge: @escaping (Double) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+            AppKitTextField(text: text, placeholder: "00:00:00.00", onCommit: onCommit)
+                .frame(height: 28)
+            HStack(spacing: 6) {
+                ForEach([-1.0, -0.1, 0.1, 1.0], id: \.self) { delta in
+                    Button(timingNudgeLabel(delta)) {
+                        onNudge(delta)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func timingNudgeLabel(_ delta: Double) -> String {
+        let magnitude = abs(delta)
+        let format = magnitude >= 1.0 ? "%.0f" : "%.1f"
+        let number = String(format: format, magnitude)
+        return delta >= 0 ? "+\(number)s" : "-\(number)s"
+    }
+
+    private func commitTimingDraftIfPossible() {
+        guard let subtitleID = draftSubtitleID ?? editableSubtitle?.id,
+              let startTime = SubtitleUtilities.parseTimecode(startText),
+              let endTime = SubtitleUtilities.parseTimecode(endText) else {
+            return
+        }
+
+        viewModel.updateSubtitleTiming(id: subtitleID, startTime: startTime, endTime: endTime)
+        syncDraft(force: true)
+    }
+
+    private func nudgeTimingDraft(_ field: TimingDraftField, by delta: Double) {
+        guard let subtitle = editableSubtitle else {
+            return
+        }
+
+        let fallbackValue = field == .start ? subtitle.startTime : subtitle.endTime
+        let currentText = field == .start ? startText : endText
+        let currentValue = SubtitleUtilities.parseTimecode(currentText) ?? fallbackValue
+        let updatedValue = max(0.0, currentValue + delta)
+        let formattedValue = SubtitleUtilities.compactTimestamp(updatedValue)
+
+        switch field {
+        case .start:
+            startText = formattedValue
+        case .end:
+            endText = formattedValue
+        }
+
+        isDirty = true
+        commitTimingDraftIfPossible()
     }
 
     private func syncDraft(force: Bool) {
@@ -6975,9 +7072,10 @@ private struct AppKitSearchField: NSViewRepresentable {
 private struct AppKitTextField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String
+    var onCommit: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        Coordinator(text: $text, onCommit: onCommit)
     }
 
     func makeNSView(context: Context) -> FocusableTextField {
@@ -6995,6 +7093,7 @@ private struct AppKitTextField: NSViewRepresentable {
 
     func updateNSView(_ nsView: FocusableTextField, context: Context) {
         nsView.placeholderString = placeholder
+        context.coordinator.onCommit = onCommit
         if context.coordinator.shouldAcceptExternalUpdate(for: nsView), nsView.stringValue != text {
             nsView.stringValue = text
         }
@@ -7003,9 +7102,11 @@ private struct AppKitTextField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         @Binding private var text: String
         private var isEditing = false
+        var onCommit: (() -> Void)?
 
-        init(text: Binding<String>) {
+        init(text: Binding<String>, onCommit: (() -> Void)?) {
             _text = text
+            self.onCommit = onCommit
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
@@ -7024,6 +7125,7 @@ private struct AppKitTextField: NSViewRepresentable {
             if let field = obj.object as? NSTextField {
                 text = field.stringValue
             }
+            onCommit?()
         }
 
         @MainActor
