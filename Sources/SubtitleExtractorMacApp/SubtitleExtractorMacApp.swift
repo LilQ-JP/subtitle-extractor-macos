@@ -239,8 +239,10 @@ private struct SubtitleExtractorCommandMenu: Commands {
     }
 }
 
+@MainActor
 final class SubtitleExtractorAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        applyBundledApplicationIcon()
         activateAppWindow(after: 0.2)
     }
 
@@ -265,6 +267,21 @@ final class SubtitleExtractorAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    @MainActor
+    private func applyBundledApplicationIcon() {
+        let bundle = Bundle.main
+
+        if let namedIcon = NSImage(named: "AppIcon") {
+            NSApp.applicationIconImage = namedIcon
+            return
+        }
+
+        if let iconURL = bundle.url(forResource: "AppIcon", withExtension: "icns"),
+           let iconImage = NSImage(contentsOf: iconURL) {
+            NSApp.applicationIconImage = iconImage
         }
     }
 }

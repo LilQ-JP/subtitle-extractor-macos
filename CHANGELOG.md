@@ -4,6 +4,13 @@ All notable user-facing changes to Caption Studio should be recorded here.
 
 The format is intentionally lightweight so GitHub Releases can reuse it directly.
 
+## 1.0.9 - 2026-03-20
+
+### Fixed
+
+- Restored the proper Caption Studio app icon in macOS by explicitly applying the bundled icon at launch
+- Updated packaged app metadata so the bundle icon is resolved reliably in Finder and the About panel
+
 ## 1.0.8 - 2026-03-18
 
 ### Fixed

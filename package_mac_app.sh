@@ -34,7 +34,7 @@ BACKEND_BUILDER="$SCRIPT_DIR/Tools/build_backend_cli.sh"
 ACTOOL_PATH="$(xcrun --find actool 2>/dev/null || true)"
 ICON_BUILD_DIR=""
 ASSETS_CAR_PATH=""
-ICON_FILE_VALUE="AppIcon.icns"
+ICON_FILE_VALUE="AppIcon"
 ICON_NAME_VALUE=""
 APP_VERSION="$(resolve_app_version "$VERSION_FILE" "$REQUESTED_VERSION")"
 
