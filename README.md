@@ -144,6 +144,7 @@ xcrun notarytool store-credentials "SubtitleExtractorNotary" \
 一般公開までの順番は [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) にまとめています。
 
 GitHub Release や Product Hunt 用の紹介文、スクリーンショット準備メモは [LAUNCH_KIT.md](LAUNCH_KIT.md) にまとめています。
+依存ライセンスと公開時の注意点は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、更新履歴は [CHANGELOG.md](CHANGELOG.md) にまとめています。
 
 ## アイコン差し替え
 
@@ -171,6 +172,14 @@ GitHub Release や Product Hunt 用の紹介文、スクリーンショット準
 開発継続を応援してもらえる場合は GitHub Sponsors から支援できます。  
 GitHub 上でスポンサー導線を表示する設定は [.github/FUNDING.yml](.github/FUNDING.yml) に入っています。
 まだ `LilQ-JP` 側で GitHub Sponsors を有効化していない場合は、GitHub 上の公開ボタンは表示されません。
+
+## ライセンスと公開メモ
+
+- `Vision` や `AVFoundation` などの macOS フレームワークは Apple 提供のプラットフォーム機能です。
+- 翻訳で使う `Ollama` は任意のローカル runtime で、アプリ本体とは別ライセンスです。
+- `requirements.txt` で入る Python 依存は、公開時にライセンス確認をした上で [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) に残してください。
+- Ollama で使う各モデルは、ランタイムとは別にモデルごとのライセンス条件があります。
+- GitHub Release には毎回変更点を書いてください。運用用のテンプレートは [CHANGELOG.md](CHANGELOG.md) と `.github/release.yml` に入っています。
 
 ## ショートカット
 

@@ -1,0 +1,22 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      - internal
+      - docs-only
+  categories:
+    - title: Highlights
+      labels:
+        - feature
+        - enhancement
+        - ui
+    - title: Fixes
+      labels:
+        - bug
+        - fix
+        - regression
+    - title: Maintenance
+      labels:
+        - chore
+        - infra
+        - docs

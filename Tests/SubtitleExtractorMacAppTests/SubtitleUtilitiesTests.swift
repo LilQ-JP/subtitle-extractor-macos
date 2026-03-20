@@ -865,6 +865,38 @@ final class SubtitleUtilitiesTests: XCTestCase {
         XCTAssertEqual(subtitles[0].endTime, 1.75, accuracy: 0.001)
     }
 
+    func testNativeOCRMergeFrameTextsDropsWeakNoiseWithoutSubtitleSupport() {
+        let subtitles = NativeOCRExtractor.mergeFrameTexts(
+            [
+                (time: 0.0, text: "字幕テスト"),
+                (time: 0.5, text: "字幕テスト"),
+                (time: 2.0, text: "メ"),
+                (time: 2.5, text: "メ"),
+                (time: 4.0, text: "次の字幕"),
+                (time: 4.5, text: "次の字幕"),
+            ],
+            sampleInterval: 0.5,
+            language: .japanese
+        )
+
+        XCTAssertEqual(subtitles.map(\.text), ["字幕テスト", "次の字幕"])
+    }
+
+    func testNativeOCRMergeFrameTextsKeepsShortRepeatedSubtitle() {
+        let subtitles = NativeOCRExtractor.mergeFrameTexts(
+            [
+                (time: 0.0, text: "え"),
+                (time: 0.5, text: "え"),
+                (time: 1.0, text: "え"),
+            ],
+            sampleInterval: 0.5,
+            language: .japanese
+        )
+
+        XCTAssertEqual(subtitles.count, 1)
+        XCTAssertEqual(subtitles[0].text, "え")
+    }
+
     func testPersistentAppStateStoresWorkspaceLayoutPreset() throws {
         var state = PersistentAppState()
         state.workspaceLayoutPreset = .editorFocus
@@ -1445,6 +1477,58 @@ final class SubtitleUtilitiesTests: XCTestCase {
         XCTAssertEqual(viewModel.subtitles.map(\.id), [third.id])
         XCTAssertEqual(viewModel.selectedSubtitleID, third.id)
         XCTAssertEqual(viewModel.selectedSubtitleIDs, [third.id])
+    }
+
+    @MainActor
+    func testDeleteSelectedSubtitleCanBeUndone() {
+        let viewModel = AppViewModel()
+        let undoManager = UndoManager()
+        let first = SubtitleItem(index: 1, startTime: 0.0, endTime: 1.0, text: "A")
+        let second = SubtitleItem(index: 2, startTime: 1.2, endTime: 2.0, text: "B")
+        viewModel.configureUndoManager(undoManager)
+        viewModel.subtitles = [first, second]
+        viewModel.setSelectedSubtitleIDs([first.id], primary: first.id, seek: false)
+
+        viewModel.deleteSelectedSubtitle()
+        XCTAssertEqual(viewModel.subtitles.map(\.text), ["B"])
+
+        undoManager.undo()
+
+        XCTAssertEqual(viewModel.subtitles.map(\.text), ["A", "B"])
+        XCTAssertEqual(viewModel.selectedSubtitleID, first.id)
+        XCTAssertEqual(viewModel.selectedSubtitleIDs, [first.id])
+    }
+
+    @MainActor
+    func testCanvasLayoutUndoRestoresVideoOffsetAndSubtitleFrame() {
+        let viewModel = AppViewModel()
+        let undoManager = UndoManager()
+        let initialSubtitleRect = viewModel.subtitleLayoutRect
+        viewModel.configureUndoManager(undoManager)
+
+        viewModel.beginCanvasLayoutUndoSession()
+        viewModel.updateOverlayVideoOffset(CGSize(width: 0.32, height: -0.18))
+        viewModel.updateOverlayVideoZoom(1.42)
+        viewModel.updateSubtitleLayoutRect(NormalizedRect(x: 0.12, y: 0.80, width: 0.72, height: 0.12))
+        viewModel.commitCanvasLayoutUndoSession(actionName: "字幕枠調整")
+
+        XCTAssertEqual(viewModel.overlayVideoOffset.width, 0.32, accuracy: 0.001)
+        XCTAssertEqual(viewModel.overlayVideoZoom, 1.42, accuracy: 0.001)
+        XCTAssertEqual(viewModel.subtitleLayoutRect.x, 0.12, accuracy: 0.001)
+
+        undoManager.undo()
+
+        XCTAssertEqual(viewModel.overlayVideoOffset.width, 0.0, accuracy: 0.001)
+        XCTAssertEqual(viewModel.overlayVideoOffset.height, 0.0, accuracy: 0.001)
+        XCTAssertEqual(viewModel.overlayVideoZoom, 1.0, accuracy: 0.001)
+        XCTAssertEqual(viewModel.subtitleLayoutRect, initialSubtitleRect)
+
+        undoManager.redo()
+
+        XCTAssertEqual(viewModel.overlayVideoOffset.width, 0.32, accuracy: 0.001)
+        XCTAssertEqual(viewModel.overlayVideoOffset.height, -0.18, accuracy: 0.001)
+        XCTAssertEqual(viewModel.overlayVideoZoom, 1.42, accuracy: 0.001)
+        XCTAssertEqual(viewModel.subtitleLayoutRect.x, 0.12, accuracy: 0.001)
     }
 
     func testProjectDocumentRoundTripPreservesSelectedSubtitleIDs() throws {

@@ -145,6 +145,7 @@ final class AppViewModel: ObservableObject {
     private var dismissedUpdateVersion: String?
     private var hasPreparedAutomaticUpdateChecks = false
     private var isSynchronizingSubtitleSelection = false
+    private var pendingCanvasLayoutUndoSnapshot: CanvasLayoutUndoSnapshot?
 
     weak var undoManager: UndoManager?
 
@@ -1182,8 +1183,10 @@ final class AppViewModel: ObservableObject {
     }
 
     func resetOverlayVideoPlacement() {
+        let previousSnapshot = makeCanvasLayoutUndoSnapshot()
         overlayVideoOffset = .zero
         overlayVideoZoom = 1.0
+        registerCanvasLayoutUndoSnapshot(previousSnapshot, actionName: "動画位置調整")
     }
 
     func resetOverlayVideoWindowToDetected() {
@@ -1198,6 +1201,10 @@ final class AppViewModel: ObservableObject {
         )
     }
 
+    func updateOverlayVideoZoom(_ zoom: Double) {
+        overlayVideoZoom = min(max(zoom, 1.0), 2.8)
+    }
+
     func updateOverlayVideoRect(_ rect: NormalizedRect) {
         overlayVideoRect = rect.clamped()
         overlayVideoRectIsManual = true
@@ -1209,6 +1216,26 @@ final class AppViewModel: ObservableObject {
 
     func updateAdditionalSubtitleLayoutRect(_ rect: NormalizedRect) {
         additionalSubtitleLayoutRect = rect.clamped()
+    }
+
+    func resetSubtitleLayoutToBottomBand() {
+        let previousSnapshot = makeCanvasLayoutUndoSnapshot()
+        subtitleLayoutRect = NormalizedRect(x: 0.08, y: 0.86, width: 0.84, height: 0.10)
+        registerCanvasLayoutUndoSnapshot(previousSnapshot, actionName: "字幕枠調整")
+    }
+
+    func beginCanvasLayoutUndoSession() {
+        if pendingCanvasLayoutUndoSnapshot == nil {
+            pendingCanvasLayoutUndoSnapshot = makeCanvasLayoutUndoSnapshot()
+        }
+    }
+
+    func commitCanvasLayoutUndoSession(actionName: String) {
+        guard let snapshot = pendingCanvasLayoutUndoSnapshot else {
+            return
+        }
+        pendingCanvasLayoutUndoSnapshot = nil
+        registerCanvasLayoutUndoSnapshot(snapshot, actionName: actionName)
     }
 
     func setSelectedSubtitleIDs(
@@ -3069,6 +3096,18 @@ final class AppViewModel: ObservableObject {
         )
     }
 
+    private func makeCanvasLayoutUndoSnapshot() -> CanvasLayoutUndoSnapshot {
+        CanvasLayoutUndoSnapshot(
+            overlayVideoRect: overlayVideoRect,
+            overlayVideoOffset: SavedSize(overlayVideoOffset),
+            overlayVideoZoom: overlayVideoZoom,
+            subtitleLayoutRect: subtitleLayoutRect,
+            additionalSubtitleLayoutRect: additionalSubtitleLayoutRect,
+            overlayEditMode: overlayEditMode,
+            overlayVideoRectIsManual: overlayVideoRectIsManual
+        )
+    }
+
     private func registerUndoSnapshot(_ snapshot: SubtitleUndoSnapshot, actionName: String) {
         guard snapshot.subtitles != subtitles ||
                 snapshot.selectedSubtitleID != selectedSubtitleID ||
@@ -3078,6 +3117,17 @@ final class AppViewModel: ObservableObject {
 
         undoManager?.registerUndo(withTarget: self) { target in
             target.restoreUndoSnapshot(snapshot, actionName: actionName)
+        }
+        undoManager?.setActionName(actionName)
+    }
+
+    private func registerCanvasLayoutUndoSnapshot(_ snapshot: CanvasLayoutUndoSnapshot, actionName: String) {
+        guard snapshot != makeCanvasLayoutUndoSnapshot() else {
+            return
+        }
+
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.restoreCanvasLayoutUndoSnapshot(snapshot, actionName: actionName)
         }
         undoManager?.setActionName(actionName)
     }
@@ -3105,6 +3155,22 @@ final class AppViewModel: ObservableObject {
         undoManager?.setActionName(actionName)
         statusMessage = "\(actionName)を元に戻しました。"
         seekToSelectedSubtitle()
+    }
+
+    private func restoreCanvasLayoutUndoSnapshot(_ snapshot: CanvasLayoutUndoSnapshot, actionName: String) {
+        let redoSnapshot = makeCanvasLayoutUndoSnapshot()
+        overlayVideoRect = snapshot.overlayVideoRect
+        overlayVideoOffset = snapshot.overlayVideoOffset.cgSize
+        overlayVideoZoom = snapshot.overlayVideoZoom
+        subtitleLayoutRect = snapshot.subtitleLayoutRect
+        additionalSubtitleLayoutRect = snapshot.additionalSubtitleLayoutRect
+        overlayEditMode = snapshot.overlayEditMode
+        overlayVideoRectIsManual = snapshot.overlayVideoRectIsManual
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.restoreCanvasLayoutUndoSnapshot(redoSnapshot, actionName: actionName)
+        }
+        undoManager?.setActionName(actionName)
+        statusMessage = "\(actionName)を元に戻しました。"
     }
 
     private func orderedSubtitleIDs(from ids: Set<SubtitleItem.ID>) -> [SubtitleItem.ID] {

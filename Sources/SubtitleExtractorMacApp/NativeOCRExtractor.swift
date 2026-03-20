@@ -54,6 +54,34 @@ struct NativeOCRExtractor {
         var currentText = ""
         var startTime = 0.0
         var endTime = 0.0
+        var currentSampleCount = 0
+
+        func appendCurrentSubtitleIfNeeded() {
+            guard !currentText.isEmpty else {
+                return
+            }
+
+            guard shouldKeepRecognizedGroup(
+                text: currentText,
+                sampleCount: currentSampleCount,
+                language: language
+            ) else {
+                currentText = ""
+                currentSampleCount = 0
+                return
+            }
+
+            subtitles.append(
+                SubtitleItem(
+                    index: subtitles.count + 1,
+                    startTime: startTime,
+                    endTime: endTime,
+                    text: currentText
+                )
+            )
+            currentText = ""
+            currentSampleCount = 0
+        }
 
         for (timestamp, rawText) in frameTexts {
             let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,55 +93,36 @@ struct NativeOCRExtractor {
                 currentText = text
                 startTime = max(0.0, timestamp - timingPadding)
                 endTime = timestamp + timingPadding
+                currentSampleCount = 1
                 continue
             }
 
             let gap = max(0.0, timestamp - endTime)
             if gap > separationGapThreshold {
-                subtitles.append(
-                    SubtitleItem(
-                        index: subtitles.count + 1,
-                        startTime: startTime,
-                        endTime: endTime,
-                        text: currentText
-                    )
-                )
+                appendCurrentSubtitleIfNeeded()
                 currentText = text
                 startTime = max(0.0, timestamp - timingPadding)
                 endTime = timestamp + timingPadding
+                currentSampleCount = 1
                 continue
             }
 
             if shouldMergeRecognizedTexts(currentText, text, language: language) {
                 endTime = max(endTime, timestamp + timingPadding)
+                currentSampleCount += 1
                 if text.count >= currentText.count {
                     currentText = text
                 }
             } else {
-                subtitles.append(
-                    SubtitleItem(
-                        index: subtitles.count + 1,
-                        startTime: startTime,
-                        endTime: endTime,
-                        text: currentText
-                    )
-                )
+                appendCurrentSubtitleIfNeeded()
                 currentText = text
                 startTime = max(0.0, timestamp - timingPadding)
                 endTime = timestamp + timingPadding
+                currentSampleCount = 1
             }
         }
 
-        if !currentText.isEmpty {
-            subtitles.append(
-                SubtitleItem(
-                    index: subtitles.count + 1,
-                    startTime: startTime,
-                    endTime: endTime,
-                    text: currentText
-                )
-            )
-        }
+        appendCurrentSubtitleIfNeeded()
 
         return mergeAdjacentDuplicateSubtitles(
             subtitles,
@@ -838,6 +847,78 @@ struct NativeOCRExtractor {
             return true
         }
         return String(String.UnicodeScalarView(filtered)).lowercased()
+    }
+
+    private static func meaningfulScalarCount(for text: String, language: TranslationLanguage) -> Int {
+        text.unicodeScalars.filter { scalar in
+            matchesExpectedScript(scalar, language: language) || CharacterSet.decimalDigits.contains(scalar)
+        }.count
+    }
+
+    private static func shouldKeepRecognizedGroup(
+        text: String,
+        sampleCount: Int,
+        language: TranslationLanguage
+    ) -> Bool {
+        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedText.isEmpty else {
+            return false
+        }
+
+        let meaningfulCount = meaningfulScalarCount(for: normalizedText, language: language)
+        let coverage = scriptCoverageScore(for: normalizedText, language: language)
+        let keyLength = comparisonKey(for: normalizedText).count
+
+        if isStrongStandaloneCandidate(
+            text: normalizedText,
+            meaningfulCount: meaningfulCount,
+            scriptCoverage: coverage,
+            language: language
+        ) {
+            return true
+        }
+
+        return sampleCount >= minimumSamplesForRecognizedGroup(
+            keyLength: keyLength,
+            meaningfulCount: meaningfulCount,
+            scriptCoverage: coverage,
+            language: language
+        )
+    }
+
+    private static func isStrongStandaloneCandidate(
+        text: String,
+        meaningfulCount: Int,
+        scriptCoverage: Double,
+        language: TranslationLanguage
+    ) -> Bool {
+        switch language {
+        case .english:
+            return meaningfulCount >= 6 && scriptCoverage >= 0.90 && !text.isEmpty
+        case .japanese, .chinese, .korean:
+            return meaningfulCount >= 3 && scriptCoverage >= 0.88 && !text.isEmpty
+        }
+    }
+
+    private static func minimumSamplesForRecognizedGroup(
+        keyLength: Int,
+        meaningfulCount: Int,
+        scriptCoverage: Double,
+        language: TranslationLanguage
+    ) -> Int {
+        if meaningfulCount == 0 || scriptCoverage < 0.55 {
+            return 3
+        }
+        if meaningfulCount <= 1 {
+            return 3
+        }
+        if keyLength <= 2 {
+            if language == .english && scriptCoverage >= 0.95 {
+                return 2
+            }
+            return 3
+        }
+        return 2
     }
 
     private static func mergeAdjacentDuplicateSubtitles(

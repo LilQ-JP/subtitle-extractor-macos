@@ -998,6 +998,8 @@ struct ContentView: View {
                         subtitleRect: viewModel.effectiveSubtitleLayoutRect,
                         videoOffset: viewModel.overlayVideoOffset,
                         videoZoom: viewModel.overlayVideoZoom,
+                        onCanvasEditBegan: viewModel.beginCanvasLayoutUndoSession,
+                        onCanvasEditEnded: viewModel.commitCanvasLayoutUndoSession,
                         onVideoOffsetChange: viewModel.updateOverlayVideoOffset,
                         onVideoRectChange: viewModel.updateOverlayVideoRect,
                         onSubtitleRectChange: viewModel.updateSubtitleLayoutRect
@@ -1462,7 +1464,21 @@ struct ContentView: View {
 
                 LabeledContent(tr("動画ズーム", "Video Zoom", "视频缩放", "영상 확대")) {
                     HStack(spacing: 12) {
-                        Slider(value: $viewModel.overlayVideoZoom, in: 1.0 ... 2.8, step: 0.01)
+                        Slider(
+                            value: Binding(
+                                get: { viewModel.overlayVideoZoom },
+                                set: { viewModel.updateOverlayVideoZoom($0) }
+                            ),
+                            in: 1.0 ... 2.8,
+                            step: 0.01,
+                            onEditingChanged: { isEditing in
+                                if isEditing {
+                                    viewModel.beginCanvasLayoutUndoSession()
+                                } else {
+                                    viewModel.commitCanvasLayoutUndoSession(actionName: "動画ズーム調整")
+                                }
+                            }
+                        )
                         Text(String(format: "%.2f×", viewModel.overlayVideoZoom))
                             .monospacedDigit()
                             .frame(width: 56, alignment: .trailing)
@@ -1671,9 +1687,7 @@ struct ContentView: View {
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                             Button(tr("下帯に戻す", "Reset to Bottom Band", "恢复到底部字幕带", "하단 띠로 복원"), systemImage: "arrow.uturn.backward.circle") {
-                                viewModel.updateSubtitleLayoutRect(
-                                    NormalizedRect(x: 0.08, y: 0.86, width: 0.84, height: 0.10)
-                                )
+                                viewModel.resetSubtitleLayoutToBottomBand()
                             }
                             .buttonStyle(.bordered)
                         }
@@ -1683,9 +1697,7 @@ struct ContentView: View {
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                             Button(tr("下帯に戻す", "Reset to Bottom Band", "恢复到底部字幕带", "하단 띠로 복원"), systemImage: "arrow.uturn.backward.circle") {
-                                viewModel.updateSubtitleLayoutRect(
-                                    NormalizedRect(x: 0.08, y: 0.86, width: 0.84, height: 0.10)
-                                )
+                                viewModel.resetSubtitleLayoutToBottomBand()
                             }
                             .buttonStyle(.bordered)
                         }
@@ -2912,6 +2924,8 @@ private struct CompositionStageView: View {
     let subtitleRect: NormalizedRect
     let videoOffset: CGSize
     let videoZoom: Double
+    let onCanvasEditBegan: () -> Void
+    let onCanvasEditEnded: (String) -> Void
     let onVideoOffsetChange: (CGSize) -> Void
     let onVideoRectChange: (NormalizedRect) -> Void
     let onSubtitleRectChange: (NormalizedRect) -> Void
@@ -3106,6 +3120,7 @@ private struct CompositionStageView: View {
             if dragStartPoint == nil {
                 dragStartPoint = value.startLocation
                 dragStartOffset = videoOffset
+                onCanvasEditBegan()
             }
 
             let deltaX = (value.translation.width / max(videoWindowRect.width, 1.0)) * 2.0
@@ -3119,15 +3134,20 @@ private struct CompositionStageView: View {
 
         case .videoWindow, .subtitleWindow, .additionalSubtitleWindow:
             let start = dragStartPoint ?? SubtitleUtilities.clamp(value.startLocation, to: displayRect)
+            if dragStartPoint == nil {
+                onCanvasEditBegan()
+            }
             dragStartPoint = start
             dragCurrentPoint = SubtitleUtilities.clamp(value.location, to: displayRect)
         }
     }
 
     private func handleDragEnded(in displayRect: CGRect) {
+        var actionName = "キャンバス調整"
         defer {
             dragStartPoint = nil
             dragCurrentPoint = nil
+            onCanvasEditEnded(actionName)
         }
 
         guard let overlayEditMode else {
@@ -3136,8 +3156,10 @@ private struct CompositionStageView: View {
 
         switch overlayEditMode {
         case .videoPosition:
+            actionName = "動画位置調整"
             return
         case .videoWindow:
+            actionName = "動画窓調整"
             guard let rect = draftSelectionRect(in: displayRect),
                   rect.width > 18,
                   rect.height > 18 else {
@@ -3145,6 +3167,7 @@ private struct CompositionStageView: View {
             }
             onVideoRectChange(normalizedRect(from: rect, in: displayRect))
         case .subtitleWindow:
+            actionName = "字幕枠調整"
             guard let rect = draftSelectionRect(in: displayRect),
                   rect.width > 18,
                   rect.height > 18 else {
@@ -3152,6 +3175,7 @@ private struct CompositionStageView: View {
             }
             onSubtitleRectChange(normalizedRect(from: rect, in: displayRect))
         case .additionalSubtitleWindow:
+            actionName = "追加字幕枠調整"
             return
         }
     }

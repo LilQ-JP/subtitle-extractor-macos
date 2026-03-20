@@ -146,6 +146,7 @@ NOTARY_PROFILE=YourProfile ./notarize_release.sh
 
 For the full release flow, see [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).  
 For launch copy and screenshot prep, see [LAUNCH_KIT.md](LAUNCH_KIT.md).
+For dependency notices and release-history tracking, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## Replacing the App Icon
 
@@ -196,6 +197,14 @@ Artifacts are grouped under `release/<version>/` and named like:
 If you want to support ongoing development, the repository is prepared for GitHub Sponsors.  
 The funding entry point is configured in [.github/FUNDING.yml](.github/FUNDING.yml).
 If GitHub Sponsors is not enabled for `LilQ-JP` yet, GitHub will not show the sponsor button until that account is activated.
+
+## Licensing and Release Notes
+
+- Apple frameworks such as `Vision` and `AVFoundation` are platform-provided components, not separate open source packages redistributed by this repository.
+- `Ollama` is an optional local runtime with its own upstream license.
+- Python dependencies from `requirements.txt` should be disclosed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) when you publish builds.
+- Ollama model licenses are separate from the app and should be checked per model.
+- Every GitHub Release should include human-readable update notes. The project now keeps a reusable history in [CHANGELOG.md](CHANGELOG.md) and a GitHub release-notes config in `.github/release.yml`.
 
 ## Notes
 

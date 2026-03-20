@@ -37,6 +37,16 @@ struct SubtitleUndoSnapshot: Sendable {
     var selectedSubtitleIDs: Set<UUID>
 }
 
+struct CanvasLayoutUndoSnapshot: Sendable, Equatable {
+    var overlayVideoRect: NormalizedRect
+    var overlayVideoOffset: SavedSize
+    var overlayVideoZoom: Double
+    var subtitleLayoutRect: NormalizedRect
+    var additionalSubtitleLayoutRect: NormalizedRect
+    var overlayEditMode: OverlayEditMode
+    var overlayVideoRectIsManual: Bool
+}
+
 struct SubtitleProjectDocument: Codable, Hashable, Sendable {
     var schemaVersion: Int
     var savedAt: Date

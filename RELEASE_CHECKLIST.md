@@ -18,7 +18,13 @@ If you need a specific version:
 swift test
 ```
 
-## 3. Build release artifacts
+## 3. Update changelog and release summary
+
+- add the user-facing changes to `CHANGELOG.md`
+- prepare the GitHub Release summary from the same points
+- if needed, tune `.github/release.yml` categories for auto-generated notes
+
+## 4. Build release artifacts
 
 ```bash
 ./package_mac_pkg.sh release
@@ -30,7 +36,7 @@ Artifacts are created under `release/<version>/`.
 - `CaptionStudio-<version>-macOS.zip`
 - `CaptionStudio-<version>-macOS.pkg`
 
-## 4. Run public-release preflight
+## 5. Run public-release preflight
 
 ```bash
 ./Tools/release_preflight.sh
@@ -47,7 +53,7 @@ This checks:
 
 If this step shows warnings, the build is not ready for general public distribution yet.
 
-## 5. Sign and notarize
+## 6. Sign and notarize
 
 ```bash
 ./notarize_release.sh
@@ -59,7 +65,7 @@ Required before running this step:
 - `Developer ID Installer` certificate in login keychain
 - `SubtitleExtractorNotary` profile stored with `notarytool`
 
-## 6. Run preflight again
+## 7. Run preflight again
 
 ```bash
 ./Tools/release_preflight.sh
@@ -67,12 +73,14 @@ Required before running this step:
 
 General public release is ready when this passes with no warnings.
 
-## 7. Publish on GitHub Releases
+## 8. Publish on GitHub Releases
 
 - tag: `v<version>`
 - attach:
   - `CaptionStudio-<version>-macOS.zip`
   - `CaptionStudio-<version>-macOS.pkg`
+- copy the matching user-facing notes from `CHANGELOG.md`
+- or use GitHub's generated notes with `.github/release.yml` and then trim the wording manually
 
 Release type:
 
